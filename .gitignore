@@ -1,0 +1,8 @@
+# Binaries
+mod_updater
+mod_updater.exe
+build/
+
+# Go stuff
+vendor/
+go.work
