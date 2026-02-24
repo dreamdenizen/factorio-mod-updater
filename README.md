@@ -94,7 +94,7 @@ go test ./...
 
 ## Acknowledgments
 
-This project was inspired by [pdemonaco/factorio-mod-updater](https://github.com/pdemonaco/factorio-mod-updater), a Bash-based Factorio mod updater. This Go rewrite was built from the ground up with a focus on cross-platform support, dependency resolution, and a modern CLI experience.
+This project was inspired by [pdemonaco/factorio-mod-updater](https://github.com/pdemonaco/factorio-mod-updater), a Python-based Factorio mod updater. This Go rewrite was built from the ground up with a focus on cross-platform support, dependency resolution, and a modern CLI experience.
 
 ## License
 
