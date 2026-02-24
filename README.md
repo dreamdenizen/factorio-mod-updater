@@ -89,4 +89,4 @@ go test ./...
 
 ## License
 
-See repository for license details.
+This project is licensed under the [MIT License](LICENSE).
