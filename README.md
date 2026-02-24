@@ -45,8 +45,8 @@ All paths can be explicitly overridden if your installation layout is non-standa
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--fact-path` | | Path to the Factorio binary |
-| `--mod-directory` | `-m` | Path to the mods directory |
+| `--bin-path` | `-b` | Path to the Factorio executable |
+| `--mod-path` | `-m` | Path to the mods directory |
 | `--server-settings` | `-s` | Path to `server-settings.json` |
 | `--player-data` | `-d` | Path to `player-data.json` |
 | `--username` | `-u` | Override factorio.com username |
@@ -54,7 +54,7 @@ All paths can be explicitly overridden if your installation layout is non-standa
 
 ```bash
 # Example with explicit paths
-./mod_updater update --fact-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
+./mod_updater update --bin-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
 ```
 
 ### Authentication
@@ -72,11 +72,16 @@ Credentials are resolved in this order:
 ├── main.go                           # Entrypoint
 ├── cmd/
 │   ├── root.go                       # Cobra root command, flag definitions, path inference
+│   ├── root_test.go                  # Unit tests for path inference logic
 │   ├── list.go                       # "list" subcommand with colorized table output
 │   └── update.go                     # "update" subcommand with download pipeline
 ├── internal/factorio/
 │   ├── updater.go                    # Core domain logic (API, downloads, hashing, deps)
-│   └── updater_test.go              # Unit tests for version matching
+│   └── updater_test.go              # Unit tests for version matching, parsing, hashing
+├── .github/workflows/
+│   ├── ci.yml                        # Runs tests on every push/PR
+│   └── release.yml                   # Cross-compiles releases on version tags
+├── .goreleaser.yml                   # GoReleaser cross-compilation config
 ├── go.mod
 └── go.sum
 ```

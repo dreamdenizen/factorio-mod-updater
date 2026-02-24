@@ -32,7 +32,7 @@ func TestResolvePaths(t *testing.T) {
 		}
 	})
 
-	t.Run("positional arg infers factPath and modPath", func(t *testing.T) {
+	t.Run("positional arg infers bin-path and mod-path", func(t *testing.T) {
 		resetPackageVars()
 
 		fp, mp, err := resolvePaths([]string{"/opt/factorio"})
@@ -48,17 +48,17 @@ func TestResolvePaths(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			expected := filepath.Join("/opt/factorio", "bin", "x64", "factorio.exe")
 			if fp != expected {
-				t.Errorf("factPath = %q; want %q", fp, expected)
+				t.Errorf("bin-path = %q; want %q", fp, expected)
 			}
 		} else {
 			expected := filepath.Join("/opt/factorio", "bin", "x64", "factorio")
 			if fp != expected {
-				t.Errorf("factPath = %q; want %q", fp, expected)
+				t.Errorf("bin-path = %q; want %q", fp, expected)
 			}
 		}
 	})
 
-	t.Run("explicit factPath is not overwritten by rootDir", func(t *testing.T) {
+	t.Run("explicit --bin-path is not overwritten by rootDir", func(t *testing.T) {
 		resetPackageVars()
 		factPath = "/custom/bin/factorio"
 
@@ -68,14 +68,14 @@ func TestResolvePaths(t *testing.T) {
 		}
 
 		if fp != "/custom/bin/factorio" {
-			t.Errorf("factPath = %q; want /custom/bin/factorio (explicit should not be overwritten)", fp)
+			t.Errorf("bin-path = %q; want /custom/bin/factorio (explicit should not be overwritten)", fp)
 		}
 		if mp != filepath.Join("/opt/factorio", "mods") {
-			t.Errorf("modPath = %q; want inferred path", mp)
+			t.Errorf("mod-path = %q; want inferred path", mp)
 		}
 	})
 
-	t.Run("explicit modPath is not overwritten by rootDir", func(t *testing.T) {
+	t.Run("explicit --mod-path is not overwritten by rootDir", func(t *testing.T) {
 		resetPackageVars()
 		modPath = "/custom/mods"
 
@@ -87,7 +87,7 @@ func TestResolvePaths(t *testing.T) {
 		// factPath should be inferred, modPath should stay explicit
 		if runtime.GOOS != "windows" {
 			if fp != filepath.Join("/opt/factorio", "bin", "x64", "factorio") {
-				t.Errorf("factPath should be inferred, got %q", fp)
+				t.Errorf("bin-path should be inferred, got %q", fp)
 			}
 		}
 	})
@@ -103,30 +103,30 @@ func TestResolvePaths(t *testing.T) {
 		}
 
 		if fp != "/explicit/factorio" {
-			t.Errorf("factPath = %q; want /explicit/factorio", fp)
+			t.Errorf("bin-path = %q; want /explicit/factorio", fp)
 		}
 		if mp != "/explicit/mods" {
-			t.Errorf("modPath = %q; want /explicit/mods", mp)
+			t.Errorf("mod-path = %q; want /explicit/mods", mp)
 		}
 	})
 
-	t.Run("only factPath set without modPath returns error", func(t *testing.T) {
+	t.Run("only --bin-path set without --mod-path returns error", func(t *testing.T) {
 		resetPackageVars()
 		factPath = "/some/bin/factorio"
 
 		_, _, err := resolvePaths([]string{})
 		if err == nil {
-			t.Fatal("expected error when modPath is missing")
+			t.Fatal("expected error when --mod-path is missing")
 		}
 	})
 
-	t.Run("only modPath set without factPath returns error", func(t *testing.T) {
+	t.Run("only --mod-path set without --bin-path returns error", func(t *testing.T) {
 		resetPackageVars()
 		modPath = "/some/mods"
 
 		_, _, err := resolvePaths([]string{})
 		if err == nil {
-			t.Fatal("expected error when factPath is missing")
+			t.Fatal("expected error when --bin-path is missing")
 		}
 	})
 }

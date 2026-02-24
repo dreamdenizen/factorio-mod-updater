@@ -42,8 +42,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "factorio.com API token overriding server-settings.json/player-data.json")
 	rootCmd.PersistentFlags().StringVarP(&settingsPath, "server-settings", "s", "", "Absolute path to the server-settings.json file (overrides player-data.json)")
 	rootCmd.PersistentFlags().StringVarP(&dataPath, "player-data", "d", "", "Absolute path to the player-data.json file")
-	rootCmd.PersistentFlags().StringVarP(&modPath, "mod-directory", "m", "", "Absolute path to the mod directory")
-	rootCmd.PersistentFlags().StringVar(&factPath, "fact-path", "", "Absolute path to the factorio binary")
+	rootCmd.PersistentFlags().StringVarP(&modPath, "mod-path", "m", "", "Path to the mods directory")
+	rootCmd.PersistentFlags().StringVarP(&factPath, "bin-path", "b", "", "Path to the Factorio executable")
 }
 
 // resolvePaths applies the path inference logic, deriving factPath and modPath
@@ -71,7 +71,7 @@ func resolvePaths(args []string) (resolvedFactPath, resolvedModPath string, err 
 	}
 
 	if fp == "" || mp == "" {
-		return "", "", fmt.Errorf("must specify either a ROOT_DIR positional argument, or both --fact-path and --mod-directory")
+		return "", "", fmt.Errorf("must specify either a ROOT_DIR positional argument, or both --bin-path and --mod-path")
 	}
 
 	return fp, mp, nil
