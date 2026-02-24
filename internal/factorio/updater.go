@@ -2,7 +2,7 @@ package factorio
 
 import (
 	"context"
-	"crypto/sha1" // #nosec G505 — SHA-1 is mandated by the Factorio Mod Portal API for download validation.
+	"crypto/sha1" // #nosec G505 - SHA-1 is mandated by the Factorio Mod Portal API for download validation.
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -506,7 +506,7 @@ func (u *Updater) downloadLatest(mod string) error {
 			needsDownload = true
 		} else {
 			// Validate hash of existing file
-			// #nosec G401 — SHA-1 is mandated by the Factorio Mod Portal API.
+			// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
 			if !validateSHA1(latest.Sha1, targetPath) {
 				needsDownload = true
 			} else {
@@ -544,7 +544,7 @@ func (u *Updater) downloadLatest(mod string) error {
 
 // validateSHA1 computes the SHA-1 digest of the file at the given path and
 // compares it against the expected hex-encoded hash string.
-// #nosec G401 — SHA-1 is mandated by the Factorio Mod Portal API for download validation.
+// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API for download validation.
 func validateSHA1(expectedHash, targetPath string) bool {
 	f, err := os.Open(targetPath)
 	if err != nil {
@@ -596,7 +596,7 @@ func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, 
 	}
 	p.Stop()
 
-	// #nosec G401 — SHA-1 is mandated by the Factorio Mod Portal API.
+	// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
 	if !validateSHA1(expectedHash, targetPath) {
 		// Clean up corrupted download
 		os.Remove(targetPath)

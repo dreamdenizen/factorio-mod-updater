@@ -1,15 +1,15 @@
 # Factorio Mod Updater
 
-A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated server. Written in Go with zero runtime dependencies — just drop the binary onto your server and run.
+A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated server. Written in Go with zero runtime dependencies. Just drop the binary onto your server and run.
 
 ## Features
 
-- **One-command updates** — Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.
-- **Smart path inference** — Point it at your Factorio root directory; it finds the binary, mods folder, and config files for you.
-- **Dependency resolution** — Automatically discovers and installs missing transitive mod dependencies.
-- **Hash validation** — Every downloaded zip is verified against its SHA-1 signature.
-- **Colorized output** — Up-to-date mods render green, outdated mods render red.
-- **Space Age aware** — Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
+- **One-command updates:** Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.
+- **Smart path inference:** Point it at your Factorio root directory; it finds the binary, mods folder, and config files for you.
+- **Dependency resolution:** Automatically discovers and installs missing transitive mod dependencies.
+- **Hash validation:** Every downloaded zip is verified against its SHA-1 signature.
+- **Colorized output:** Up-to-date mods render green, outdated mods render red.
+- **Space Age aware:** Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
 
 ## Installation
 
