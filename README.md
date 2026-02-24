@@ -11,9 +11,31 @@ A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated
 - **Colorized output:** Up-to-date mods render green, outdated mods render red.
 - **Space Age aware:** Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
 
+## Why Go?
+
+This project exists because updating mods on a headless Factorio server shouldn't require fighting with Python versions, Ruby gems, or other runtime dependencies. After running into too many issues with system interpreters on various Linux distributions, I wanted a single, self-contained binary that you can download and run immediately on any system. Go makes that possible with static compilation and zero runtime dependencies.
+
 ## Installation
 
-Download the latest binary for your platform from the [Releases](../../releases) page, or build from source:
+### Download a pre-built binary
+
+Grab the latest release for your platform from the [Releases](../../releases) page.
+
+On Linux/macOS, you'll need to make the binary executable after downloading:
+
+```bash
+chmod +x mod_updater
+```
+
+You can then move it somewhere on your PATH if you'd like to run it from anywhere:
+
+```bash
+sudo mv mod_updater /usr/local/bin/
+```
+
+### Build from source
+
+If you have Go installed, you can build it yourself:
 
 ```bash
 go build -o mod_updater
