@@ -15,13 +15,23 @@ var listCmd = &cobra.Command{
 			return
 		}
 
-		spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
-		err = updater.ResolveMetadata()
-		if err != nil {
-			spinner.Fail("Failed to resolve metadata: ", err)
-			return
+		if pterm.RawOutput {
+			pterm.Println("Fetching metadata and resolving dependencies...")
+			err = updater.ResolveMetadata()
+			if err != nil {
+				pterm.Error.Println("Failed to resolve metadata:", err)
+				return
+			}
+			pterm.Success.Println("Metadata fully resolved")
+		} else {
+			spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
+			err = updater.ResolveMetadata()
+			if err != nil {
+				spinner.Fail("Failed to resolve metadata: ", err)
+				return
+			}
+			spinner.Success("Metadata fully resolved")
 		}
-		spinner.Success("Metadata fully resolved")
 
 		tableData := pterm.TableData{
 			{"Mod Name", "Enabled", "Installed", "Current Version", "Latest Version"},

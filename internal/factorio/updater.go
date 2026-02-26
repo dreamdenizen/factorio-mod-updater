@@ -531,7 +531,12 @@ func (u *Updater) downloadLatest(mod string) error {
 	q.Set("token", u.token)
 	dlURL.RawQuery = q.Encode()
 
-	p, _ := pterm.DefaultProgressbar.WithTotal(100).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
+	var p *pterm.ProgressbarPrinter
+	if pterm.RawOutput {
+		pterm.Println(fmt.Sprintf("Downloading %s (%s)...", data.Title, latest.Version))
+	} else {
+		p, _ = pterm.DefaultProgressbar.WithTotal(100).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
+	}
 
 	if err := downloadFile(targetPath, dlURL.String(), p, latest.Sha1); err != nil {
 		pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
@@ -591,10 +596,14 @@ func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, 
 	}
 
 	if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
-		p.Stop()
+		if p != nil {
+			p.Stop()
+		}
 		return fmt.Errorf("writing download data: %w", err)
 	}
-	p.Stop()
+	if p != nil {
+		p.Stop()
+	}
 
 	// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
 	if !validateSHA1(expectedHash, targetPath) {
@@ -615,7 +624,7 @@ type writeCounter struct {
 func (wc *writeCounter) Write(p []byte) (int, error) {
 	n := len(p)
 	wc.Current += uint64(n)
-	if wc.Total > 0 {
+	if wc.Total > 0 && wc.Progress != nil {
 		pct := int(float64(wc.Current) / float64(wc.Total) * 100)
 		if pct > 100 {
 			pct = 100

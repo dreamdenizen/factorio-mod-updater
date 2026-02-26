@@ -10,6 +10,7 @@ import (
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -31,6 +32,10 @@ var rootCmd = &cobra.Command{
 // Execute initializes the root command tree and delegates to Cobra for
 // argument parsing and subcommand dispatch.
 func Execute() {
+	// Disable pterm rich output when stdout is not a terminal (e.g., AMP, CI, piped output)
+	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
+		pterm.DisableStyling()
+	}
 	if err := rootCmd.Execute(); err != nil {
 		pterm.Error.Println(err)
 		os.Exit(1)
