@@ -381,3 +381,286 @@ func TestValidateHash(t *testing.T) {
 		}
 	})
 }
+
+func TestGetMods(t *testing.T) {
+	u := &Updater{
+		mods: map[string]*ModData{
+			"zebra":  {Name: "zebra", Title: "Zebra Mod"},
+			"alpha":  {Name: "alpha", Title: "Alpha Mod"},
+			"middle": {Name: "middle", Title: "Middle Mod"},
+		},
+	}
+
+	mods := u.GetMods()
+
+	if len(mods) != 3 {
+		t.Fatalf("expected 3 mods, got %d", len(mods))
+	}
+
+	// Verify alphabetical sort by title
+	if mods[0].Title != "Alpha Mod" {
+		t.Errorf("first mod title = %q; want Alpha Mod", mods[0].Title)
+	}
+	if mods[1].Title != "Middle Mod" {
+		t.Errorf("second mod title = %q; want Middle Mod", mods[1].Title)
+	}
+	if mods[2].Title != "Zebra Mod" {
+		t.Errorf("third mod title = %q; want Zebra Mod", mods[2].Title)
+	}
+
+	// Verify returned slice is independent (capacity pre-allocated)
+	if cap(mods) < 3 {
+		t.Errorf("slice capacity = %d; expected at least 3", cap(mods))
+	}
+}
+
+func TestWriteCounter(t *testing.T) {
+	t.Run("nil progress pointer does not panic", func(t *testing.T) {
+		wc := &writeCounter{
+			Total:    1000,
+			Progress: nil,
+		}
+		data := make([]byte, 500)
+		n, err := wc.Write(data)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if n != 500 {
+			t.Errorf("Write returned %d; want 500", n)
+		}
+		if wc.Current != 500 {
+			t.Errorf("Current = %d; want 500", wc.Current)
+		}
+	})
+
+	t.Run("tracks cumulative bytes", func(t *testing.T) {
+		wc := &writeCounter{
+			Total:    1000,
+			Progress: nil,
+		}
+		wc.Write(make([]byte, 300))
+		wc.Write(make([]byte, 400))
+		if wc.Current != 700 {
+			t.Errorf("Current = %d; want 700", wc.Current)
+		}
+	})
+
+	t.Run("zero total does not divide by zero", func(t *testing.T) {
+		wc := &writeCounter{
+			Total:    0,
+			Progress: nil,
+		}
+		n, err := wc.Write(make([]byte, 100))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if n != 100 {
+			t.Errorf("Write returned %d; want 100", n)
+		}
+	})
+}
+
+func TestPruneOld(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create multiple versioned zips for "helmod"
+	os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("old1"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.5.zip"), []byte("old2"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("latest"), 0644)
+
+	// Create an unrelated mod zip (should not be touched)
+	os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("other"), 0644)
+
+	// Create a non-zip file (should not be touched)
+	os.WriteFile(filepath.Join(tmpDir, "README.txt"), []byte("readme"), 0644)
+
+	u := &Updater{
+		modPath: tmpDir,
+		mods: map[string]*ModData{
+			"helmod": {
+				Name: "helmod",
+				Latest: &ModRelease{
+					Version: "2.2.12",
+				},
+			},
+		},
+	}
+
+	if err := u.pruneOld("helmod"); err != nil {
+		t.Fatalf("pruneOld() returned unexpected error: %v", err)
+	}
+
+	// Verify old versions were removed
+	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.0.zip")); !os.IsNotExist(err) {
+		t.Error("helmod_2.1.0.zip should have been pruned")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.5.zip")); !os.IsNotExist(err) {
+		t.Error("helmod_2.1.5.zip should have been pruned")
+	}
+
+	// Verify latest version was kept
+	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.2.12.zip")); err != nil {
+		t.Error("helmod_2.2.12.zip (latest) should NOT have been pruned")
+	}
+
+	// Verify unrelated files were not touched
+	if _, err := os.Stat(filepath.Join(tmpDir, "jetpack_0.4.15.zip")); err != nil {
+		t.Error("jetpack_0.4.15.zip should NOT have been touched")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "README.txt")); err != nil {
+		t.Error("README.txt should NOT have been touched")
+	}
+}
+
+// --- Integration tests below require a live Factorio installation at ~/factorio ---
+// These skip automatically when the installation is not present (e.g., in CI).
+
+func factorioRoot(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("could not determine home directory")
+	}
+	root := filepath.Join(home, "factorio")
+	if _, err := os.Stat(filepath.Join(root, "bin", "x64", "factorio")); err != nil {
+		t.Skip("live Factorio installation not found at ~/factorio, skipping integration test")
+	}
+	return root
+}
+
+func TestDetermineVersion(t *testing.T) {
+	root := factorioRoot(t)
+
+	u := &Updater{
+		factPath: filepath.Join(root, "bin", "x64", "factorio"),
+	}
+
+	if err := u.determineVersion(); err != nil {
+		t.Fatalf("determineVersion() returned unexpected error: %v", err)
+	}
+
+	// factVersion should be a major.minor string like "2.0"
+	if u.factVersion == "" {
+		t.Fatal("factVersion should not be empty")
+	}
+
+	parts := strings.Split(u.factVersion, ".")
+	if len(parts) != 2 {
+		t.Errorf("factVersion = %q; expected major.minor format (e.g. '2.0')", u.factVersion)
+	}
+}
+
+func TestNewUpdater(t *testing.T) {
+	root := factorioRoot(t)
+
+	// Verify auth config exists
+	settingsPath := filepath.Join(root, "data", "server-settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		settingsPath = ""
+	}
+	playerData := filepath.Join(root, "player-data.json")
+	if _, err := os.Stat(playerData); err != nil {
+		playerData = ""
+	}
+	if settingsPath == "" && playerData == "" {
+		t.Skip("no auth config found, skipping NewUpdater integration test")
+	}
+
+	updater, err := NewUpdater(
+		settingsPath,
+		playerData,
+		filepath.Join(root, "mods"),
+		filepath.Join(root, "bin", "x64", "factorio"),
+		"", "",
+	)
+	if err != nil {
+		t.Fatalf("NewUpdater() returned unexpected error: %v", err)
+	}
+
+	// Should have detected a factorio version
+	if updater.factVersion == "" {
+		t.Error("factVersion should have been populated")
+	}
+
+	// Should have parsed at least some mods
+	if len(updater.mods) == 0 {
+		t.Error("mods map should not be empty after parsing mod-list.json")
+	}
+
+	// Built-in mods should be excluded
+	for _, builtin := range []string{"base", "core", "space-age", "quality", "elevated-rails"} {
+		if _, ok := updater.mods[builtin]; ok {
+			t.Errorf("built-in mod %q should have been excluded", builtin)
+		}
+	}
+
+	// Auth should have been resolved
+	if updater.username == "" || updater.token == "" {
+		t.Error("username and token should have been resolved from config files")
+	}
+}
+
+func TestRetrieveModMetadata(t *testing.T) {
+	root := factorioRoot(t)
+
+	settingsPath := filepath.Join(root, "data", "server-settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		settingsPath = ""
+	}
+	playerData := filepath.Join(root, "player-data.json")
+	if _, err := os.Stat(playerData); err != nil {
+		playerData = ""
+	}
+
+	updater, err := NewUpdater(
+		settingsPath,
+		playerData,
+		filepath.Join(root, "mods"),
+		filepath.Join(root, "bin", "x64", "factorio"),
+		"", "",
+	)
+	if err != nil {
+		t.Fatalf("NewUpdater() failed: %v", err)
+	}
+
+	// Pick a well-known mod that should always exist on the portal
+	testMod := "helmod"
+	if _, ok := updater.mods[testMod]; !ok {
+		// Add it manually if not in mod-list
+		updater.mods[testMod] = &ModData{
+			Name:  testMod,
+			Title: testMod,
+		}
+	}
+
+	if err := updater.RetrieveModMetadata(testMod); err != nil {
+		t.Fatalf("RetrieveModMetadata(%q) returned unexpected error: %v", testMod, err)
+	}
+
+	mod := updater.mods[testMod]
+
+	// Title should have been populated from the API
+	if mod.Title == "" || mod.Title == testMod {
+		t.Errorf("mod title should have been resolved from API, got %q", mod.Title)
+	}
+
+	// Should have found a compatible release
+	if mod.Latest == nil {
+		t.Fatal("expected a compatible release to be found")
+	}
+
+	// Release should have required fields
+	if mod.Latest.Version == "" {
+		t.Error("latest release version should not be empty")
+	}
+	if mod.Latest.DownloadURL == "" {
+		t.Error("latest release download URL should not be empty")
+	}
+	if mod.Latest.FileName == "" {
+		t.Error("latest release filename should not be empty")
+	}
+	if mod.Latest.Sha1 == "" {
+		t.Error("latest release SHA-1 should not be empty")
+	}
+}
+
