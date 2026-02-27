@@ -473,8 +473,9 @@ func (u *Updater) saveModList() error {
 // accumulated and returned collectively rather than halting the entire process.
 // Why: Adopts a fault-tolerant batch application model, maximizing the number of
 // successfully updated mods even during partial Mod Portal outages.
-func (u *Updater) UpdateMods() error {
+func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
+	updatedCount := 0
 
 	for mod, data := range u.mods {
 		if data.Latest == nil {
@@ -485,8 +486,12 @@ func (u *Updater) UpdateMods() error {
 		if err := u.pruneOld(mod); err != nil {
 			errs = append(errs, fmt.Errorf("pruning old releases for %q: %w", mod, err))
 		}
-		if err := u.downloadLatest(mod); err != nil {
+		didUpdate, err := u.downloadLatest(mod)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
+		}
+		if didUpdate {
+			updatedCount++
 		}
 	}
 
@@ -494,7 +499,7 @@ func (u *Updater) UpdateMods() error {
 		errs = append(errs, fmt.Errorf("saving mod-list: %w", err))
 	}
 
-	return errors.Join(errs...)
+	return updatedCount, errors.Join(errs...)
 }
 
 // pruneOld removes all versioned zip files for the given mod that do not
@@ -529,7 +534,7 @@ func (u *Updater) pruneOld(mod string) error {
 
 // downloadLatest checks whether the given mod needs a download (new install,
 // version mismatch, or hash mismatch) and fetches it from the Mod Portal.
-func (u *Updater) downloadLatest(mod string) error {
+func (u *Updater) downloadLatest(mod string) (bool, error) {
 	data := u.mods[mod]
 	latest := data.Latest
 
@@ -555,13 +560,13 @@ func (u *Updater) downloadLatest(mod string) error {
 	}
 
 	if !needsDownload {
-		return nil
+		return false, nil
 	}
 
 	// Build download URL using net/url for safe credential encoding
 	dlURL, err := url.Parse(fmt.Sprintf("%s%s", u.modServerURL, latest.DownloadURL))
 	if err != nil {
-		return fmt.Errorf("parsing download URL for %q: %w", mod, err)
+		return false, fmt.Errorf("parsing download URL for %q: %w", mod, err)
 	}
 	q := dlURL.Query()
 	q.Set("username", u.username)
@@ -577,11 +582,11 @@ func (u *Updater) downloadLatest(mod string) error {
 
 	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
 		pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
-		return err
+		return false, err
 	}
 
 	pterm.Success.Printf("Downloaded %s\n", data.Title)
-	return nil
+	return true, nil
 }
 
 // validateSHA1 computes the SHA-1 digest of the file at the given path and

@@ -18,6 +18,7 @@ var listCmd = &cobra.Command{
 		}
 
 		if pterm.RawOutput {
+			pterm.Info.Println("Starting Factorio Mod Updater (List Mode)...")
 			pterm.Println("Fetching metadata and resolving dependencies...")
 			err = updater.ResolveMetadata()
 			if err != nil {

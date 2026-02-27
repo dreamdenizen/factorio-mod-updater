@@ -16,6 +16,7 @@ var updateCmd = &cobra.Command{
 		}
 
 		if pterm.RawOutput {
+			pterm.Info.Println("Starting Factorio Mod Updater (Update Mode)...")
 			pterm.Println("Fetching metadata and resolving dependencies...")
 			err = updater.ResolveMetadata()
 			if err != nil {
@@ -33,11 +34,13 @@ var updateCmd = &cobra.Command{
 		}
 		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 
-		err = updater.UpdateMods()
+		updatedCount, err := updater.UpdateMods()
 		if err != nil {
 			pterm.Error.Println("Failed to complete update:", err)
+		} else if updatedCount == 0 {
+			pterm.Success.Println("No mod updates were required.")
 		} else {
-			pterm.Success.Println("Update complete!")
+			pterm.Success.Printf("Update complete! Successfully updated %d mod(s).\n", updatedCount)
 		}
 	},
 }
