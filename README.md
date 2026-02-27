@@ -4,16 +4,18 @@ A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated
 
 ## Features
 
-- **One-command updates:** Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.
-- **Smart path inference:** Point it at your Factorio root directory; it finds the binary, mods folder, and config files for you.
-- **Dependency resolution:** Automatically discovers and installs missing transitive mod dependencies.
-- **Hash validation:** Every downloaded zip is verified against its SHA-1 signature.
-- **Colorized output:** Up-to-date mods render green, outdated mods render red.
-- **Space Age aware:** Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
+*   **One-command updates:** Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.
+*   **Smart path inference:** Point it at your Factorio root directory; it finds the binary, mods folder, and config files for you.
+*   **Dependency resolution:** Automatically discovers and installs missing transitive mod dependencies.
+*   **Hash validation:** Every downloaded zip is verified against its SHA-1 signature.
+*   **Space Age aware:** Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
+*   **Headless environment ready:** Automatically detects non-TTY environments like CI pipelines or CubeCoders AMP, disabling colors and spinners for clean log parsing.
+*   **Fault tolerant:** Capable of partial updates. If a specific mod's metadata fails to resolve, progress continues for all other mods.
+*   **Self-cleaning:** Automatically removes outdated version archives after successfully downloading new releases.
 
 ## Why Go?
 
-This project exists because updating mods on a headless Factorio server shouldn't require fighting with Python versions, Ruby gems, or other runtime dependencies. After running into too many issues with system interpreters on various Linux distributions, I wanted a single, self-contained binary that you can download and run immediately on any system. Go makes that possible with static compilation and zero runtime dependencies.
+This project exists because updating mods on a headless Factorio server should not require fighting with Python versions, Ruby gems, or other runtime dependencies. After encountering issues with system interpreters on various Linux distributions, I wanted a single, self-contained binary that you can download and run immediately on any system. Go makes that possible with static compilation and zero runtime dependencies.
 
 ## Installation
 
@@ -21,13 +23,13 @@ This project exists because updating mods on a headless Factorio server shouldn'
 
 Grab the latest release for your platform from the [Releases](../../releases) page.
 
-On Linux/macOS, you'll need to make the binary executable after downloading:
+On Linux/macOS, you will need to make the binary executable after downloading:
 
 ```bash
 chmod +x mod_updater
 ```
 
-You can then move it somewhere on your PATH if you'd like to run it from anywhere:
+You can then move it somewhere on your PATH if you would like to run it from anywhere:
 
 ```bash
 sudo mv mod_updater /usr/local/bin/
@@ -95,7 +97,7 @@ Credentials are resolved in this order:
 ├── cmd/
 │   ├── root.go                       # Cobra root command, flag definitions, path inference
 │   ├── root_test.go                  # Unit tests for path inference logic
-│   ├── list.go                       # "list" subcommand with colorized table output
+│   ├── list.go                       # "list" subcommand with format negotiation
 │   └── update.go                     # "update" subcommand with download pipeline
 ├── internal/factorio/
 │   ├── updater.go                    # Core domain logic (API, downloads, hashing, deps)
@@ -110,9 +112,13 @@ Credentials are resolved in this order:
 
 ## Running Tests
 
+The test suite includes over 50 unit and integration tests covering the core domain logic, path inference, and authentication fallback mechanisms.
+
 ```bash
-go test ./...
+go test -v -count=1 -race ./...
 ```
+
+Tests requiring a live Factorio installation at `~/factorio` will automatically skip if the binary is not present (e.g. in CI environments).
 
 ## Acknowledgments
 
