@@ -19,18 +19,17 @@ var updateCmd = &cobra.Command{
 			pterm.Println("Fetching metadata and resolving dependencies...")
 			err = updater.ResolveMetadata()
 			if err != nil {
-				pterm.Error.Println("Failed to resolve metadata:", err)
-				return
+				pterm.Warning.Println("Some metadata could not be resolved:", err)
 			}
-			pterm.Success.Println("Metadata fully resolved")
+			pterm.Success.Println("Metadata resolution complete")
 		} else {
 			spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
 			err = updater.ResolveMetadata()
 			if err != nil {
-				spinner.Fail("Failed to resolve metadata: ", err)
-				return
+				spinner.Warning("Some metadata could not be resolved")
+			} else {
+				spinner.Success("Metadata fully resolved")
 			}
-			spinner.Success("Metadata fully resolved")
 		}
 		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 

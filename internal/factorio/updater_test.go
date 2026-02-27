@@ -4,6 +4,9 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,11 +123,11 @@ func TestParseModList(t *testing.T) {
 		},
 	}
 	modListData, _ := json.Marshal(modList)
-	os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), modListData, 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), modListData, 0644)
 
 	// Create fake zip files to simulate installed mods
-	os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("fake"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("fake"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("fake"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("fake"), 0644)
 
 	u := &Updater{
 		modPath: tmpDir,
@@ -182,10 +185,10 @@ func TestParseTokens(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		serverSettings := `{"username": "server_user", "token": "server_token"}`
-		os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
 
 		playerData := `{"service-username": "player_user", "service-token": "player_token"}`
-		os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte(playerData), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte(playerData), 0644)
 
 		u := &Updater{
 			settingsPath: filepath.Join(tmpDir, "server-settings.json"),
@@ -209,7 +212,7 @@ func TestParseTokens(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		playerData := `{"service-username": "player_user", "service-token": "player_token"}`
-		os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte(playerData), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte(playerData), 0644)
 
 		u := &Updater{
 			dataPath: filepath.Join(tmpDir, "player-data.json"),
@@ -232,7 +235,7 @@ func TestParseTokens(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		serverSettings := `{"username": "server_user", "token": "server_token"}`
-		os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
 
 		u := &Updater{
 			settingsPath: filepath.Join(tmpDir, "server-settings.json"),
@@ -256,10 +259,10 @@ func TestParseTokens(t *testing.T) {
 	t.Run("auto-discovers server-settings.json from modPath parent", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		modsDir := filepath.Join(tmpDir, "mods")
-		os.MkdirAll(modsDir, 0755)
+		_ = os.MkdirAll(modsDir, 0755)
 
 		serverSettings := `{"username": "discovered_user", "token": "discovered_token"}`
-		os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte(serverSettings), 0644)
 
 		u := &Updater{
 			modPath: modsDir,
@@ -276,13 +279,66 @@ func TestParseTokens(t *testing.T) {
 			t.Errorf("token = %q; want %q", u.token, "discovered_token")
 		}
 	})
+
+	t.Run("malformed settings JSON falls back to player-data", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Write invalid JSON to server-settings
+		_ = os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte("{invalid json}"), 0644)
+
+		// Write valid player-data
+		playerData := `{"service-username": "fallback_user", "service-token": "fallback_token"}`
+		_ = os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte(playerData), 0644)
+
+		u := &Updater{
+			settingsPath: filepath.Join(tmpDir, "server-settings.json"),
+			dataPath:     filepath.Join(tmpDir, "player-data.json"),
+			modPath:      filepath.Join(tmpDir, "mods"),
+		}
+
+		if err := u.parseTokens(); err != nil {
+			t.Fatalf("parseTokens() should not return error on malformed config: %v", err)
+		}
+
+		if u.username != "fallback_user" {
+			t.Errorf("username = %q; want %q (should fall back to player-data)", u.username, "fallback_user")
+		}
+		if u.token != "fallback_token" {
+			t.Errorf("token = %q; want %q (should fall back to player-data)", u.token, "fallback_token")
+		}
+	})
+
+	t.Run("both configs malformed returns no error but leaves credentials empty", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		_ = os.WriteFile(filepath.Join(tmpDir, "server-settings.json"), []byte("{bad}"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "player-data.json"), []byte("{bad}"), 0644)
+
+		u := &Updater{
+			settingsPath: filepath.Join(tmpDir, "server-settings.json"),
+			dataPath:     filepath.Join(tmpDir, "player-data.json"),
+			modPath:      filepath.Join(tmpDir, "mods"),
+		}
+
+		if err := u.parseTokens(); err != nil {
+			t.Fatalf("parseTokens() should not return error on malformed configs: %v", err)
+		}
+
+		// Both configs were unparseable, so credentials remain empty
+		if u.username != "" {
+			t.Errorf("username = %q; want empty (both configs malformed)", u.username)
+		}
+		if u.token != "" {
+			t.Errorf("token = %q; want empty (both configs malformed)", u.token)
+		}
+	})
 }
 
 func TestSaveModList(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Seed an existing mod-list.json so saveModList can back it up
-	os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(`{"mods":[]}`), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(`{"mods":[]}`), 0644)
 
 	u := &Updater{
 		modPath: tmpDir,
@@ -356,7 +412,7 @@ func TestValidateHash(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.zip")
 	content := []byte("hello world")
-	os.WriteFile(testFile, content, 0644)
+	_ = os.WriteFile(testFile, content, 0644)
 
 	// Compute expected SHA-1
 	h := sha1.New()
@@ -438,8 +494,8 @@ func TestWriteCounter(t *testing.T) {
 			Total:    1000,
 			Progress: nil,
 		}
-		wc.Write(make([]byte, 300))
-		wc.Write(make([]byte, 400))
+		_, _ = wc.Write(make([]byte, 300))
+		_, _ = wc.Write(make([]byte, 400))
 		if wc.Current != 700 {
 			t.Errorf("Current = %d; want 700", wc.Current)
 		}
@@ -464,15 +520,15 @@ func TestPruneOld(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create multiple versioned zips for "helmod"
-	os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("old1"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.5.zip"), []byte("old2"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("latest"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("old1"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.5.zip"), []byte("old2"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("latest"), 0644)
 
 	// Create an unrelated mod zip (should not be touched)
-	os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("other"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("other"), 0644)
 
 	// Create a non-zip file (should not be touched)
-	os.WriteFile(filepath.Join(tmpDir, "README.txt"), []byte("readme"), 0644)
+	_ = os.WriteFile(filepath.Join(tmpDir, "README.txt"), []byte("readme"), 0644)
 
 	u := &Updater{
 		modPath: tmpDir,
@@ -510,6 +566,83 @@ func TestPruneOld(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmpDir, "README.txt")); err != nil {
 		t.Error("README.txt should NOT have been touched")
 	}
+}
+
+func TestDownloadFile(t *testing.T) {
+	// Test content and its expected SHA-1
+	content := []byte("hello factorio mods")
+	h := sha1.New()
+	h.Write(content)
+	correctHash := hex.EncodeToString(h.Sum(nil))
+
+	t.Run("successful download validates hash", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		tmpDir := t.TempDir()
+		target := filepath.Join(tmpDir, "test_mod_1.0.0.zip")
+
+		err := downloadFile(server.Client(), target, server.URL, nil, correctHash)
+		if err != nil {
+			t.Fatalf("downloadFile() returned unexpected error: %v", err)
+		}
+
+		// Verify file exists and content matches
+		data, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("failed to read downloaded file: %v", err)
+		}
+		if string(data) != string(content) {
+			t.Errorf("file content = %q; want %q", data, content)
+		}
+	})
+
+	t.Run("hash mismatch removes downloaded file", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+			_, _ = w.Write(content)
+		}))
+		defer server.Close()
+
+		tmpDir := t.TempDir()
+		target := filepath.Join(tmpDir, "bad_hash_1.0.0.zip")
+
+		err := downloadFile(server.Client(), target, server.URL, nil, "0000000000000000000000000000000000000000")
+		if err == nil {
+			t.Fatal("downloadFile() should return error on hash mismatch")
+		}
+
+		// File should have been cleaned up
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Error("file should have been removed after hash mismatch")
+		}
+	})
+
+	t.Run("server error mid-stream cleans up partial file", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Claim a large file, but close connection early
+			w.Header().Set("Content-Length", "1000000")
+			_, _ = w.Write([]byte("partial"))
+			// Server handler returns, connection closes - io.Copy gets unexpected EOF
+		}))
+		defer server.Close()
+
+		tmpDir := t.TempDir()
+		target := filepath.Join(tmpDir, "partial_1.0.0.zip")
+
+		err := downloadFile(server.Client(), target, server.URL, nil, correctHash)
+		if err == nil {
+			t.Fatal("downloadFile() should return error on truncated download")
+		}
+
+		// Partial file should have been cleaned up (CR-4)
+		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+			t.Error("partial file should have been removed after io.Copy error")
+		}
+	})
 }
 
 // --- Integration tests below require a live Factorio installation at ~/factorio ---

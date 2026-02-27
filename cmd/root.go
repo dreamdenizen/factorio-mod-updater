@@ -31,6 +31,8 @@ var rootCmd = &cobra.Command{
 
 // Execute initializes the root command tree and delegates to Cobra for
 // argument parsing and subcommand dispatch.
+// Why: Serves as the primary CLI entrypoint, isolating Cobra initialization
+// and global flags (like TTY detection) from the business logic.
 func Execute() {
 	// Disable pterm rich output when stdout is not a terminal (e.g., AMP, CI, piped output)
 	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
@@ -82,6 +84,8 @@ func resolvePaths(args []string) (resolvedFactPath, resolvedModPath string, err 
 	return fp, mp, nil
 }
 
+// buildUpdater resolves paths from CLI args/flags and constructs a fully
+// initialized Updater ready for metadata resolution and mod operations.
 func buildUpdater(args []string) (*factorio.Updater, error) {
 	resolvedFactPath, resolvedModPath, err := resolvePaths(args)
 	if err != nil {

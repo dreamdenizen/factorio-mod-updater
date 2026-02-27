@@ -35,6 +35,8 @@ const maxAPIResponseBytes = 10 * 1024 * 1024 // 10 MB
 
 // Updater orchestrates the lifecycle of Factorio mod management, including
 // authentication, version detection, metadata resolution, and download execution.
+// Why: Acts as the central domain model for all mod operations, decoupling the
+// CLI presentation layer from HTTP interactions and filesystem mutations.
 type Updater struct {
 	modServerURL string
 	settingsPath string
@@ -50,6 +52,8 @@ type Updater struct {
 }
 
 // ModData represents the tracked state of a single mod within the update graph.
+// Why: Normalizes state tracking between currently installed filesystem
+// representation and remote API metadata, simplifying evaluation logic.
 type ModData struct {
 	Name       string
 	Title      string
@@ -61,6 +65,8 @@ type ModData struct {
 }
 
 // ModRelease represents a single versioned release artifact from the Mod Portal API.
+// Why: Provides strict structural typing for the Factorio API's release payload,
+// enabling safe unmarshaling and reliable hash validation.
 type ModRelease struct {
 	DownloadURL string `json:"download_url"`
 	FileName    string `json:"file_name"`
@@ -73,6 +79,8 @@ type ModRelease struct {
 }
 
 // ModPortalMetadata represents the JSON response from the /api/mods/{name}/full endpoint.
+// Why: Serves as the root bounded context for all Mod Portal API queries, capturing
+// only the required attributes (Title, Deprecated, Releases) avoiding memory overhead.
 type ModPortalMetadata struct {
 	Title      string       `json:"title"`
 	Deprecated bool         `json:"deprecated"`
@@ -82,6 +90,8 @@ type ModPortalMetadata struct {
 // NewUpdater hydrates the foundational configurations, attempting to ingest
 // authentication tokens from explicit CLI flags, then falling back to
 // server-settings.json or player-data.json.
+// Why: Centralizes instantiation and enforces fail-fast credential, version,
+// and local mod resolution before permitting any network operations.
 func NewUpdater(settingsPath, dataPath, modPath, factPath, username, token string) (*Updater, error) {
 	u := &Updater{
 		modServerURL: "https://mods.factorio.com",
@@ -126,6 +136,8 @@ func NewUpdater(settingsPath, dataPath, modPath, factPath, username, token strin
 	return u, nil
 }
 
+// parseTokens resolves authentication credentials by checking server-settings.json
+// first, then falling back to player-data.json. CLI flags take priority over both.
 func (u *Updater) parseTokens() error {
 	type configData struct {
 		Username        string `json:"username,omitempty"`
@@ -168,8 +180,14 @@ func (u *Updater) parseTokens() error {
 		}
 	}
 
-	settings, _ := loadConfig(u.settingsPath)
-	data, _ := loadConfig(u.dataPath)
+	settings, err := loadConfig(u.settingsPath)
+	if err != nil {
+		pterm.Warning.Printf("Failed to parse %s: %v\n", u.settingsPath, err)
+	}
+	data, err := loadConfig(u.dataPath)
+	if err != nil {
+		pterm.Warning.Printf("Failed to parse %s: %v\n", u.dataPath, err)
+	}
 
 	if u.username == "" {
 		if settings != nil && settings.Username != "" {
@@ -190,6 +208,8 @@ func (u *Updater) parseTokens() error {
 	return nil
 }
 
+// determineVersion executes the Factorio binary with --version and parses
+// the major.minor version string from its output.
 func (u *Updater) determineVersion() error {
 	cmd := exec.Command(u.factPath, "--version")
 	output, err := cmd.CombinedOutput()
@@ -207,6 +227,8 @@ func (u *Updater) determineVersion() error {
 	return nil
 }
 
+// parseModList reads mod-list.json and scans the mods directory for installed
+// zip files, populating the Updater's mod tracking map.
 func (u *Updater) parseModList() error {
 	modListPath := filepath.Join(u.modPath, "mod-list.json")
 	data, err := os.ReadFile(modListPath)
@@ -281,6 +303,8 @@ func versionMatch(installed, mod string) bool {
 
 // RetrieveModMetadata queries the Factorio Mod Portal API for a specific mod,
 // selecting the latest release compatible with the detected Factorio version.
+// Why: Segregates the network IO required for metadata hydration, allowing the
+// graph resolver to iteratively fetch details precisely when new deps are discovered.
 func (u *Updater) RetrieveModMetadata(mod string) error {
 	m := u.mods[mod]
 	apiURL := fmt.Sprintf("%s/api/mods/%s/full", u.modServerURL, url.PathEscape(mod))
@@ -297,7 +321,7 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 	if err != nil {
 		return fmt.Errorf("fetching metadata for mod %q: %w", mod, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("mod portal returned status %d for %q", resp.StatusCode, mod)
@@ -329,6 +353,8 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 // ResolveMetadata constructs the dependency graph by fetching metadata for all
 // tracked mods and iteratively resolving transitive dependencies until the
 // graph stabilizes.
+// Why: Pre-computes the entire deployment plan to guarantee zero missing
+// dependencies before executing any destructive filesystem modifications.
 func (u *Updater) ResolveMetadata() error {
 	var errs []error
 
@@ -383,9 +409,8 @@ func (u *Updater) ResolveMetadata() error {
 		}
 	}
 
-	// Non-fatal: metadata errors don't prevent listing/updating other mods
 	if len(errs) > 0 {
-		pterm.Warning.Printf("Encountered %d non-fatal metadata errors\n", len(errs))
+		return fmt.Errorf("encountered %d metadata errors: %w", len(errs), errors.Join(errs...))
 	}
 
 	return nil
@@ -393,6 +418,8 @@ func (u *Updater) ResolveMetadata() error {
 
 // GetMods returns a sorted snapshot of all tracked mods, ordered alphabetically
 // by title for deterministic UI rendering.
+// Why: Ensures the CLI or structured output consumes a predictable sequence,
+// isolating map iteration randomness from the presentation tier.
 func (u *Updater) GetMods() []*ModData {
 	list := make([]*ModData, 0, len(u.mods))
 	for _, m := range u.mods {
@@ -406,6 +433,8 @@ func (u *Updater) GetMods() []*ModData {
 	return list
 }
 
+// saveModList writes the current mod tracking state back to mod-list.json,
+// creating a timestamped backup of the previous version first.
 func (u *Updater) saveModList() error {
 	type modEntry struct {
 		Name    string `json:"name"`
@@ -442,6 +471,8 @@ func (u *Updater) saveModList() error {
 // UpdateMods iterates over all tracked mods, pruning outdated releases and
 // downloading the latest compatible versions. Errors for individual mods are
 // accumulated and returned collectively rather than halting the entire process.
+// Why: Adopts a fault-tolerant batch application model, maximizing the number of
+// successfully updated mods even during partial Mod Portal outages.
 func (u *Updater) UpdateMods() error {
 	var errs []error
 
@@ -466,6 +497,8 @@ func (u *Updater) UpdateMods() error {
 	return errors.Join(errs...)
 }
 
+// pruneOld removes all versioned zip files for the given mod that do not
+// match the latest release version.
 func (u *Updater) pruneOld(mod string) error {
 	data := u.mods[mod]
 	latestVersion := data.Latest.Version
@@ -494,6 +527,8 @@ func (u *Updater) pruneOld(mod string) error {
 	return nil
 }
 
+// downloadLatest checks whether the given mod needs a download (new install,
+// version mismatch, or hash mismatch) and fetches it from the Mod Portal.
 func (u *Updater) downloadLatest(mod string) error {
 	data := u.mods[mod]
 	latest := data.Latest
@@ -510,7 +545,9 @@ func (u *Updater) downloadLatest(mod string) error {
 			if !validateSHA1(latest.Sha1, targetPath) {
 				needsDownload = true
 			} else {
-				pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
+				if !pterm.RawOutput {
+					pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
+				}
 			}
 		}
 	} else {
@@ -533,12 +570,12 @@ func (u *Updater) downloadLatest(mod string) error {
 
 	var p *pterm.ProgressbarPrinter
 	if pterm.RawOutput {
-		pterm.Println(fmt.Sprintf("Downloading %s (%s)...", data.Title, latest.Version))
+		fmt.Printf("Downloading %s (%s)...\n", data.Title, latest.Version)
 	} else {
 		p, _ = pterm.DefaultProgressbar.WithTotal(100).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
 	}
 
-	if err := downloadFile(targetPath, dlURL.String(), p, latest.Sha1); err != nil {
+	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
 		pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
 		return err
 	}
@@ -555,7 +592,7 @@ func validateSHA1(expectedHash, targetPath string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	h := sha1.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -565,7 +602,9 @@ func validateSHA1(expectedHash, targetPath string) bool {
 	return hex.EncodeToString(h.Sum(nil)) == expectedHash
 }
 
-func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, expectedHash string) error {
+// downloadFile fetches a file from dlURL, writes it to targetPath, tracks
+// progress via the optional ProgressbarPrinter, and validates the SHA-1 hash.
+func downloadFile(client *http.Client, targetPath string, dlURL string, p *pterm.ProgressbarPrinter, expectedHash string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -574,11 +613,11 @@ func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, 
 		return fmt.Errorf("creating download request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("executing download: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download returned status %d", resp.StatusCode)
@@ -588,7 +627,7 @@ func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, 
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", targetPath, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	counter := &writeCounter{
 		Total:    uint64(resp.ContentLength),
@@ -597,30 +636,36 @@ func downloadFile(targetPath string, dlURL string, p *pterm.ProgressbarPrinter, 
 
 	if _, err = io.Copy(out, io.TeeReader(resp.Body, counter)); err != nil {
 		if p != nil {
-			p.Stop()
+			_, _ = p.Stop()
 		}
+		_ = out.Close()
+		_ = os.Remove(targetPath)
 		return fmt.Errorf("writing download data: %w", err)
 	}
 	if p != nil {
-		p.Stop()
+		_, _ = p.Stop()
 	}
 
 	// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
 	if !validateSHA1(expectedHash, targetPath) {
 		// Clean up corrupted download
-		os.Remove(targetPath)
+		_ = os.Remove(targetPath)
 		return fmt.Errorf("SHA-1 validation failed for %s", targetPath)
 	}
 
 	return nil
 }
 
+// writeCounter wraps an io.Writer to track download progress and update
+// a pterm ProgressbarPrinter with the current completion percentage.
 type writeCounter struct {
 	Total    uint64
 	Current  uint64
 	Progress *pterm.ProgressbarPrinter
 }
 
+// Write implements io.Writer, accumulating byte counts and updating the
+// progress bar when both Total and Progress are non-zero/non-nil.
 func (wc *writeCounter) Write(p []byte) (int, error) {
 	n := len(p)
 	wc.Current += uint64(n)
