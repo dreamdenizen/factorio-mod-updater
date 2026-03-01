@@ -1,24 +1,25 @@
 # Factorio Mod Updater
 
-A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated server. Written in Go with zero runtime dependencies. Just drop the binary onto your server and run.
+A fast and simple tool for updating mods on your Factorio dedicated server. You don't need to install Python, Ruby, or any other software. Just drop the file onto your server and run it!
 
 ![Factorio Mod Updater Demo](assets/update_demo.gif)
 
 ## Features
 
-*   **One-command updates:** Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.
-*   **Smart path inference:** Point it at your Factorio root directory and it finds the binary, mods folder, and config files for you.
-*   **Dependency resolution:** Automatically discovers and installs any missing mod dependencies.
-*   **Hash validation:** Every downloaded zip is verified against its SHA-1 signature.
-*   **Space Age aware:** Built-in expansions (`space-age`, `quality`, `elevated-rails`) are automatically skipped.
-*   **Good Looking Modern Terminal Output:** Spinners, colors, and progress bars galore
-*   **Headless environment ready:** Automatically detects non-TTY environments like Pterodactyl, Pelican Panel, or CubeCoders AMP, disabling colors and spinners for clean log parsing.
-*   **Fault tolerant:** Capable of partial updates. If a specific mod's metadata fails to resolve, progress continues for all other mods.
-*   **Self-cleaning:** Automatically removes outdated version archives after successfully downloading new releases.
+*   **One-command updates:** Connects to the [Factorio Mod Portal](https://mods.factorio.com) and automatically downloads the latest versions of your mods.
+*   **Smart auto-detection:** Just point it at your Factorio folder and it finds everything it needs (mods, settings) all on its own.
+*   **Handles dependencies:** If a mod needs another mod to work, the updater automatically finds and installs it for you.
+*   **Safe downloads:** Checks every downloaded file to make sure it isn't corrupted, preventing broken `.zip` files from crashing your server.
+*   **Space Age aware:** Built-in DLC expansions (`space-age`, `quality`, `elevated-rails`) are safely ignored.
+*   **Beautiful terminal:** Enjoy a clean output with spinners, colors, and live progress bars as your mods download.
+*   **Server panel friendly:** Works perfectly with server panels like Pterodactyl, Pelican Panel, or CubeCoders AMP. It automatically disables fancy colors and progress bars to keep your server logs clean and readable.
+*   **Detailed log file:** Keeps a permanent record of everything it did (like what got updated or removed) in a handy `last-mod-update.log` file, just in case you need to check what happened.
+*   **Bulletproof:** If one mod gets stuck or removed from the portal, the updater skips it and finishes the rest so your server can still start.
+*   **Self-cleaning:** Automatically deletes old mod `.zip` files when a new version is downloaded, saving your server's disk space.
 
-## Why Go?
+## Why use this tool?
 
-This project exists because updating mods on a headless Factorio server with the wrong Python versions, Ruby gems, or other runtime dependencies is a pain. After encountering issues with Python and Ruby on various Linux distros, I wanted a single, self-contained binary that you can download and run immediately on any system, including Windows, and MacOS. Go makes that possible with static compilation and zero runtime dependencies.
+Managing mods on a server can be a pain if you need to download a bunch of other stuff just to make a script work. This project exists to provide a single, ready-to-use program that you can download and run immediately on any system (Windows, Linux, or MacOS) without setting anything else up.
 
 ## Installation
 
@@ -26,13 +27,13 @@ This project exists because updating mods on a headless Factorio server with the
 
 Grab the latest release for your platform from the [Releases](../../releases) page.
 
-On Linux/macOS, you will need to make the binary executable after downloading:
+On Linux/macOS, you will need to make the file executable after downloading:
 
 ```bash
 chmod +x mod_updater
 ```
 
-You can then move it somewhere on your PATH if you would like to run it from anywhere:
+You can then move it somewhere on your PATH if you would like to run it from anywhere without typing `./` first:
 
 ```bash
 sudo mv mod_updater /usr/local/bin/
@@ -40,7 +41,7 @@ sudo mv mod_updater /usr/local/bin/
 
 ## Usage
 
-The simplest invocation uses your Factorio installation's root directory as a positional argument. By default, this will check for updates, display a status table, and automatically download upgrades if necessary.
+The simplest way to use the updater is to just point it at your Factorio installation folder. By default, it will check for updates, show you what's old, and automatically download the upgrades.
 
 ```bash
 # Check status and update all mods to their latest compatible release
@@ -50,33 +51,42 @@ The simplest invocation uses your Factorio installation's root directory as a po
 ./mod_updater list ~/factorio
 ```
 
-### Override Flags
+### Advanced: Override Flags
 
-All paths can be explicitly overridden if you're not using a standard installation layout:
+All paths can be explicitly overridden if you have a custom or unusual server setup:
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--bin-path` | `-b` | Path to the Factorio executable |
-| `--mod-path` | `-m` | Path to the mods directory |
-| `--server-settings` | `-s` | Path to `server-settings.json` |
-| `--player-data` | `-d` | Path to `player-data.json` |
+| `--bin-path` | `-b` | Path to your Factorio executable |
+| `--mod-path` | `-m` | Path to your mods directory |
+| `--server-settings` | `-s` | Path to your `server-settings.json` |
+| `--player-data` | `-d` | Path to your `player-data.json` |
 | `--username` | `-u` | Override factorio.com username |
 | `--token` | `-t` | Override factorio.com API token |
 
 ```bash
-# Example with explicit paths
+# Example with explicit, custom paths
 ./mod_updater --bin-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
 ```
 
 ### Authentication
 
-Credentials are resolved in this order:
+The updater needs to log in to the Mod Portal to download files. It looks for your Factorio account details (Username and Token) in this order:
 
-1. CLI flags (`-u` / `-t`)
-2. `server-settings.json` (`username` / `token` fields)
-3. `player-data.json` (`service-username` / `service-token` fields)
+1. CLI flags (`-u` and `-t` when you run the command)
+2. Inside your `server-settings.json` file
+3. Inside your `player-data.json` file
 
-## Project Structure
+*(Note: Your Token is the unique code found on your factorio.com profile page, not your password!)*
+
+---
+
+## Technical Details (For Developers)
+
+<details>
+<summary>Click to view Project Structure and Build Instructions</summary>
+
+### Project Structure
 
 ```
 .
@@ -97,9 +107,9 @@ Credentials are resolved in this order:
 └── go.sum
 ```
 
-## Build from source
+### Build from source
 
-If you have Go installed, you can build it yourself:
+If you have Go 1.26+ installed, you can build the binary yourself:
 
 ```bash
 go build -o mod_updater
@@ -113,19 +123,18 @@ GOOS=windows GOARCH=amd64 go build -o build/mod_updater_windows_amd64.exe
 GOOS=darwin  GOARCH=arm64 go build -o build/mod_updater_darwin_arm64
 ```
 
-## Running Tests
+### Running Tests
 
-The test suite includes over 50 unit and integration tests covering the core domain logic, path inference, and authentication fallback mechanisms.
+The test suite includes over 50 unit and integration tests covering the core logic.
 
 ```bash
 go test -v -count=1 -race ./...
 ```
-
-Tests requiring a live Factorio installation at `~/factorio` will automatically skip if the binary is not present (e.g. in CI environments).
+</details>
 
 ## Acknowledgments
 
-This project was heavily inspired by [pdemonaco/factorio-mod-updater](https://github.com/pdemonaco/factorio-mod-updater), a Python-based Factorio mod updater that I used for a long time until I ran into a host that I just couldn't get working with Python. This Go rewrite was built from the ground up with a focus on cross-platform support, dependency resolution, and a modern CLI experience.
+This project was heavily inspired by [pdemonaco/factorio-mod-updater](https://github.com/pdemonaco/factorio-mod-updater), a script that I used for a long time until I ran into an OS that I just couldn't get working with Python. This tool was built from the ground up with a focus on ease-of-use, cross-platform support, and native terminal feedback.
 
 ## License
 
