@@ -39,9 +39,10 @@ var rootCmd = &cobra.Command{
 // Why: Serves as the primary CLI entrypoint, isolating Cobra initialization
 // and global flags (like TTY detection) from the business logic.
 func Execute() {
-	// Disable pterm rich output when stdout is not a terminal (e.g., AMP, CI, piped output)
+	// Disable pterm rich output and enforce RawOutput when stdout is not a terminal (e.g., AMP, CI, piped output)
 	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
 		pterm.DisableStyling()
+		pterm.RawOutput = true
 	}
 	if err := rootCmd.Execute(); err != nil {
 		pterm.Error.Println(err)
