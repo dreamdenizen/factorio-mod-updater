@@ -75,6 +75,7 @@ func printModList(updater *factorio.Updater) {
 				fmt.Printf("  OUTDATED  %s (%s -> %s)\n", mod.Title, cver, lver)
 			} else {
 				upToDate++
+				fmt.Printf("  CURRENT   %s (%s)\n", mod.Title, cver)
 			}
 		}
 

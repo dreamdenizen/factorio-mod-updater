@@ -661,25 +661,16 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	targetPath := filepath.Join(u.modPath, safeFileName)
 
 	needsDownload := false
-	if data.Installed {
-		if data.Version != latest.Version {
-			needsDownload = true
-		} else {
-			// Validate hash of existing file
-			// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
-			if !validateSHA1(latest.Sha1, targetPath) {
-				needsDownload = true
-			} else {
-				if pterm.RawOutput || multi == nil {
-					pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
-				}
-			}
-		}
-	} else {
+	if !data.Installed || data.Version != latest.Version {
+		needsDownload = true
+	} else if !validateSHA1(latest.Sha1, targetPath) {
 		needsDownload = true
 	}
 
 	if !needsDownload {
+		if pterm.RawOutput || multi == nil {
+			pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
+		}
 		return false, nil
 	}
 
