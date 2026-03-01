@@ -54,6 +54,28 @@ type Updater struct {
 	factVersion string
 	mods        map[string]*ModData
 	httpClient  *http.Client
+	
+	logBuf strings.Builder
+	logMu  sync.Mutex
+}
+
+// WriteLog appends a detailed trace line to the persistent log buffer in a thread-safe manner.
+func (u *Updater) WriteLog(format string, args ...any) {
+	u.logMu.Lock()
+	defer u.logMu.Unlock()
+	u.logBuf.WriteString(fmt.Sprintf(format, args...))
+	if !strings.HasSuffix(format, "\n") {
+		u.logBuf.WriteString("\n")
+	}
+}
+
+// SaveLog dumps the accumulated detailed activity trace buffer to last-mod-update.log
+// located in the root Factorio directory.
+func (u *Updater) SaveLog(cliSummary string) error {
+	logPath := filepath.Join(filepath.Dir(u.modPath), "last-mod-update.log")
+	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s", 
+		time.Now().Format(time.RFC3339), cliSummary, u.logBuf.String())
+	return os.WriteFile(logPath, []byte(finalLog), 0644)
 }
 
 // ModData represents the tracked state of a single mod within the update graph.
@@ -560,8 +582,6 @@ func (u *Updater) UpdateMods() (int, error) {
 	// eg bounds concurrent mod port API downloads to 5 parallel Goroutines.
 	// We wait on the group at the end to ensure no runaway Goroutines or memory leaks.
 	eg := new(errgroup.Group)
-	eg.SetLimit(5)
-
 	sortedMods := u.GetMods()
 	for _, data := range sortedMods {
 		mod := data.Name
@@ -574,10 +594,14 @@ func (u *Updater) UpdateMods() (int, error) {
 			}
 
 			didUpdate, err := u.downloadLatest(mod, multi)
+			
+			mu.Lock()
 			if err != nil {
-				mu.Lock()
 				errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
-				mu.Unlock()
+			}
+			mu.Unlock()
+			
+			if err != nil {
 				return nil
 			}
 
@@ -643,7 +667,10 @@ func (u *Updater) pruneOld(mod string) error {
 			if err := os.Remove(removePath); err != nil {
 				return fmt.Errorf("removing %s: %w", f.Name(), err)
 			}
-			pterm.Info.Printf("Removed old release: %s\n", f.Name())
+			u.WriteLog("Removed old release: %s", f.Name())
+			if !pterm.RawOutput {
+				pterm.Info.Printf("Removed old release: %s\n", f.Name())
+			}
 		}
 	}
 
@@ -652,6 +679,7 @@ func (u *Updater) pruneOld(mod string) error {
 
 // downloadLatest checks whether the given mod needs a download (new install,
 // version mismatch, or hash mismatch) and fetches it from the Mod Portal.
+// It returns a boolean marking true if updated.
 func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, error) {
 	data := u.mods[mod]
 	latest := data.Latest
@@ -668,9 +696,6 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	}
 
 	if !needsDownload {
-		if pterm.RawOutput || multi == nil {
-			pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
-		}
 		return false, nil
 	}
 
@@ -688,20 +713,13 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	if !pterm.RawOutput && multi != nil {
 		pWriter := multi.NewWriter()
 		p, _ = pterm.DefaultProgressbar.WithTotal(100).WithWriter(pWriter).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
-	} else {
-		pterm.Info.Printf("Downloading %s (%s)...\n", data.Title, latest.Version)
 	}
 
 	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
-		if pterm.RawOutput || multi == nil {
-			pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
-		}
 		return false, err
 	}
 
-	if pterm.RawOutput || multi == nil {
-		pterm.Success.Printf("Downloaded %s\n", data.Title)
-	}
+	u.WriteLog("Downloaded %s (%s)", data.Title, latest.Version)
 	return true, nil
 }
 

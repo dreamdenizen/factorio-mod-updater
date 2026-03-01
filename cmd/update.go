@@ -43,23 +43,38 @@ func runUpdateFlow(cfg CLIConfig) error {
 	}
 	
 	fmt.Println()
-	printModList(updater)
+	summaryStr := printModList(updater)
 	fmt.Println()
 
 	if !updatesAvailable(updater) {
-		pterm.Success.Println("All mods are up to date.")
+		msg := "All mods are up to date."
+		pterm.Success.Println(msg)
+		updater.WriteLog("%s", msg)
+		_ = updater.SaveLog(summaryStr)
 		return nil
 	}
 
 	pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 
 	updatedCount, err := updater.UpdateMods()
+	var finalMsg string
+	if err != nil {
+		finalMsg = fmt.Sprintf("Failed to complete update: %v", err)
+	} else if updatedCount == 0 {
+		finalMsg = "No mod updates were required."
+		pterm.Success.Println(finalMsg)
+	} else {
+		finalMsg = fmt.Sprintf("Update complete! Successfully updated %d mod(s).", updatedCount)
+		pterm.Success.Printf("%s\n", finalMsg)
+	}
+	
+	updater.WriteLog("%s", finalMsg)
+	if logErr := updater.SaveLog(summaryStr); logErr != nil {
+		pterm.Warning.Printf("Failed to write last-mod-update.log: %v\n", logErr)
+	}
+	
 	if err != nil {
 		return fmt.Errorf("failed to complete update: %w", err)
-	} else if updatedCount == 0 {
-		pterm.Success.Println("No mod updates were required.")
-	} else {
-		pterm.Success.Printf("Update complete! Successfully updated %d mod(s).\n", updatedCount)
 	}
 	return nil
 }

@@ -37,101 +37,92 @@ var listCmd = &cobra.Command{
 		}
 
 
-		printModList(updater)
+		_ = printModList(updater)
 		return nil
 	},
 }
 
 // printModList renders the list of tracked mods to the console, using a rich
-// table for TTY environments or a basic text summary for raw output.
-func printModList(updater *factorio.Updater) {
+// It returns a summary string of the operations computed for persistent logging.
+func printModList(updater *factorio.Updater) string {
 	mods := updater.GetMods()
 
+	upToDate := 0
+	outdated := 0
+	missing := 0
+	disabled := 0
+
+	tableData := pterm.TableData{
+		{"Mod Name", "Enabled", "Installed", "Current Version", "Latest Version"},
+	}
+
+	for _, mod := range mods {
+		lver := "N/A"
+		if mod.Latest != nil {
+			lver = mod.Latest.Version
+		}
+		cver := "N/A"
+		if mod.Installed {
+			cver = mod.Version
+		}
+
+		if !mod.Enabled {
+			disabled++
+			updater.WriteLog("  DISABLED  %s", mod.Title)
+		} else if !mod.Installed {
+			missing++
+			updater.WriteLog("  MISSING   %s (latest: %s)", mod.Title, lver)
+		} else if cver != lver {
+			outdated++
+			updater.WriteLog("  OUTDATED  %s (%s -> %s)", mod.Title, cver, lver)
+		} else {
+			upToDate++
+			updater.WriteLog("  CURRENT   %s (%s)", mod.Title, cver)
+		}
+
+		titleStr := mod.Title
+		cverStr := cver
+		lverStr := lver
+
+		if !mod.Installed || cver != lver {
+			titleStr = pterm.Red(titleStr)
+			cverStr = pterm.Red(cverStr)
+			lverStr = pterm.Red(lverStr)
+		} else {
+			titleStr = pterm.Green(titleStr)
+			cverStr = pterm.Green(cverStr)
+			lverStr = pterm.Green(lverStr)
+		}
+
+		enabledStr := pterm.Red("false")
+		if mod.Enabled {
+			enabledStr = pterm.Green("true")
+		}
+
+		installedStr := pterm.Red("false")
+		if mod.Installed {
+			installedStr = pterm.Green("true")
+		}
+
+		tableData = append(tableData, []string{
+			titleStr,
+			enabledStr,
+			installedStr,
+			cverStr,
+			lverStr,
+		})
+	}
+
+	summaryStr := fmt.Sprintf("Summary: %d up to date, %d outdated, %d missing, %d disabled (%d total)",
+		upToDate, outdated, missing, disabled, len(mods))
+
 	if pterm.RawOutput {
-		// Non-TTY: only show mods needing attention + summary
-		upToDate := 0
-		outdated := 0
-		missing := 0
-		disabled := 0
-
-		for _, mod := range mods {
-			lver := "N/A"
-			if mod.Latest != nil {
-				lver = mod.Latest.Version
-			}
-			cver := "N/A"
-			if mod.Installed {
-				cver = mod.Version
-			}
-
-			if !mod.Enabled {
-				disabled++
-				fmt.Printf("  DISABLED  %s\n", mod.Title)
-			} else if !mod.Installed {
-				missing++
-				fmt.Printf("  MISSING   %s (latest: %s)\n", mod.Title, lver)
-			} else if cver != lver {
-				outdated++
-				fmt.Printf("  OUTDATED  %s (%s -> %s)\n", mod.Title, cver, lver)
-			} else {
-				upToDate++
-				fmt.Printf("  CURRENT   %s (%s)\n", mod.Title, cver)
-			}
-		}
-
-		fmt.Printf("\nSummary: %d up to date, %d outdated, %d missing, %d disabled (%d total)\n",
-			upToDate, outdated, missing, disabled, len(mods))
+		fmt.Printf("\n%s\n", summaryStr)
 	} else {
-		// TTY: full colorized table
-		tableData := pterm.TableData{
-			{"Mod Name", "Enabled", "Installed", "Current Version", "Latest Version"},
-		}
-
-		for _, mod := range mods {
-			cver := "N/A"
-			if mod.Installed {
-				cver = mod.Version
-			}
-			lver := "N/A"
-			if mod.Latest != nil {
-				lver = mod.Latest.Version
-			}
-
-			titleStr := mod.Title
-			cverStr := cver
-			lverStr := lver
-
-			if !mod.Installed || cver != lver {
-				titleStr = pterm.Red(titleStr)
-				cverStr = pterm.Red(cverStr)
-				lverStr = pterm.Red(lverStr)
-			} else {
-				titleStr = pterm.Green(titleStr)
-				cverStr = pterm.Green(cverStr)
-				lverStr = pterm.Green(lverStr)
-			}
-
-			enabledStr := pterm.Red("false")
-			if mod.Enabled {
-				enabledStr = pterm.Green("true")
-			}
-
-			installedStr := pterm.Red("false")
-			if mod.Installed {
-				installedStr = pterm.Green("true")
-			}
-
-			tableData = append(tableData, []string{
-				titleStr,
-				enabledStr,
-				installedStr,
-				cverStr,
-				lverStr,
-			})
-		}
-
 		_ = pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 	}
+
+	return summaryStr
 }
 
 func init() {
