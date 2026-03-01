@@ -63,7 +63,7 @@ type Updater struct {
 func (u *Updater) WriteLog(format string, args ...any) {
 	u.logMu.Lock()
 	defer u.logMu.Unlock()
-	u.logBuf.WriteString(fmt.Sprintf(format, args...))
+	fmt.Fprintf(&u.logBuf, format, args...)
 	if !strings.HasSuffix(format, "\n") {
 		u.logBuf.WriteString("\n")
 	}
@@ -317,6 +317,14 @@ func (u *Updater) parseModList() error {
 					if m, ok := u.mods[name]; ok {
 						m.Installed = true
 						m.Version = version
+					} else {
+						u.mods[name] = &ModData{
+							Name:      name,
+							Title:     name,
+							Enabled:   true,
+							Installed: true,
+							Version:   version,
+						}
 					}
 				}
 			}
@@ -720,6 +728,9 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	}
 
 	u.WriteLog("Downloaded %s (%s)", data.Title, latest.Version)
+	if pterm.RawOutput {
+		pterm.Info.Printf("Downloaded %s (%s)\n", data.Title, latest.Version)
+	}
 	return true, nil
 }
 
