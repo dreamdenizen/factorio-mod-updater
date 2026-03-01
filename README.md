@@ -16,7 +16,7 @@ A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated
 
 ## Why Go?
 
-This project exists because updating mods on a headless Factorio server with the wrong Python versions, Ruby gems, or other runtime dependencies is a pain. After encountering issues with Python and Ruby on various Linux distros, I wanted a single, self-contained binary that you can download and run immediately on any system, including Windows. Go makes that possible with static compilation and zero runtime dependencies.
+This project exists because updating mods on a headless Factorio server with the wrong Python versions, Ruby gems, or other runtime dependencies is a pain. After encountering issues with Python and Ruby on various Linux distros, I wanted a single, self-contained binary that you can download and run immediately on any system, including Windows, and MacOS. Go makes that possible with static compilation and zero runtime dependencies.
 
 ## Installation
 
@@ -38,14 +38,14 @@ sudo mv mod_updater /usr/local/bin/
 
 ## Usage
 
-The simplest invocation uses your Factorio installation's root directory as a positional argument:
+The simplest invocation uses your Factorio installation's root directory as a positional argument. By default, this will check for updates, display a status table, and automatically download upgrades if necessary.
 
 ```bash
-# List all mods and their update status
-./mod_updater list ~/factorio
+# Check status and update all mods to their latest compatible release
+./mod_updater ~/factorio
 
-# Update all mods to their latest compatible release
-./mod_updater update ~/factorio
+# Safe/Dry Run: Only list out-of-date mods without downloading updates
+./mod_updater list ~/factorio
 ```
 
 ### Override Flags
@@ -63,7 +63,7 @@ All paths can be explicitly overridden if you're not using a standard installati
 
 ```bash
 # Example with explicit paths
-./mod_updater update --bin-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
+./mod_updater --bin-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
 ```
 
 ### Authentication

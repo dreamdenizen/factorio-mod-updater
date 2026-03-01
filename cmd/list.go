@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"factorio-updater/internal/factorio"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -35,93 +36,100 @@ var listCmd = &cobra.Command{
 			}
 		}
 
-		mods := updater.GetMods()
 
-		if pterm.RawOutput {
-			// Non-TTY: only show mods needing attention + summary
-			upToDate := 0
-			outdated := 0
-			missing := 0
-			disabled := 0
-
-			for _, mod := range mods {
-				lver := "N/A"
-				if mod.Latest != nil {
-					lver = mod.Latest.Version
-				}
-				cver := "N/A"
-				if mod.Installed {
-					cver = mod.Version
-				}
-
-				if !mod.Enabled {
-					disabled++
-					fmt.Printf("  DISABLED  %s\n", mod.Title)
-				} else if !mod.Installed {
-					missing++
-					fmt.Printf("  MISSING   %s (latest: %s)\n", mod.Title, lver)
-				} else if cver != lver {
-					outdated++
-					fmt.Printf("  OUTDATED  %s (%s -> %s)\n", mod.Title, cver, lver)
-				} else {
-					upToDate++
-				}
-			}
-
-			fmt.Printf("\nSummary: %d up to date, %d outdated, %d missing, %d disabled (%d total)\n",
-				upToDate, outdated, missing, disabled, len(mods))
-		} else {
-			// TTY: full colorized table
-			tableData := pterm.TableData{
-				{"Mod Name", "Enabled", "Installed", "Current Version", "Latest Version"},
-			}
-
-			for _, mod := range mods {
-				cver := "N/A"
-				if mod.Installed {
-					cver = mod.Version
-				}
-				lver := "N/A"
-				if mod.Latest != nil {
-					lver = mod.Latest.Version
-				}
-
-				titleStr := mod.Title
-				cverStr := cver
-				lverStr := lver
-
-				if !mod.Installed || cver != lver {
-					titleStr = pterm.Red(titleStr)
-					cverStr = pterm.Red(cverStr)
-					lverStr = pterm.Red(lverStr)
-				} else {
-					titleStr = pterm.Green(titleStr)
-					cverStr = pterm.Green(cverStr)
-					lverStr = pterm.Green(lverStr)
-				}
-
-				enabledStr := pterm.Red("false")
-				if mod.Enabled {
-					enabledStr = pterm.Green("true")
-				}
-
-				installedStr := pterm.Red("false")
-				if mod.Installed {
-					installedStr = pterm.Green("true")
-				}
-
-				tableData = append(tableData, []string{
-					titleStr,
-					enabledStr,
-					installedStr,
-					cverStr,
-					lverStr,
-				})
-			}
-
-			_ = pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
-		}
+		printModList(updater)
 	},
+}
+
+// printModList renders the list of tracked mods to the console, using a rich
+// table for TTY environments or a basic text summary for raw output.
+func printModList(updater *factorio.Updater) {
+	mods := updater.GetMods()
+
+	if pterm.RawOutput {
+		// Non-TTY: only show mods needing attention + summary
+		upToDate := 0
+		outdated := 0
+		missing := 0
+		disabled := 0
+
+		for _, mod := range mods {
+			lver := "N/A"
+			if mod.Latest != nil {
+				lver = mod.Latest.Version
+			}
+			cver := "N/A"
+			if mod.Installed {
+				cver = mod.Version
+			}
+
+			if !mod.Enabled {
+				disabled++
+				fmt.Printf("  DISABLED  %s\n", mod.Title)
+			} else if !mod.Installed {
+				missing++
+				fmt.Printf("  MISSING   %s (latest: %s)\n", mod.Title, lver)
+			} else if cver != lver {
+				outdated++
+				fmt.Printf("  OUTDATED  %s (%s -> %s)\n", mod.Title, cver, lver)
+			} else {
+				upToDate++
+			}
+		}
+
+		fmt.Printf("\nSummary: %d up to date, %d outdated, %d missing, %d disabled (%d total)\n",
+			upToDate, outdated, missing, disabled, len(mods))
+	} else {
+		// TTY: full colorized table
+		tableData := pterm.TableData{
+			{"Mod Name", "Enabled", "Installed", "Current Version", "Latest Version"},
+		}
+
+		for _, mod := range mods {
+			cver := "N/A"
+			if mod.Installed {
+				cver = mod.Version
+			}
+			lver := "N/A"
+			if mod.Latest != nil {
+				lver = mod.Latest.Version
+			}
+
+			titleStr := mod.Title
+			cverStr := cver
+			lverStr := lver
+
+			if !mod.Installed || cver != lver {
+				titleStr = pterm.Red(titleStr)
+				cverStr = pterm.Red(cverStr)
+				lverStr = pterm.Red(lverStr)
+			} else {
+				titleStr = pterm.Green(titleStr)
+				cverStr = pterm.Green(cverStr)
+				lverStr = pterm.Green(lverStr)
+			}
+
+			enabledStr := pterm.Red("false")
+			if mod.Enabled {
+				enabledStr = pterm.Green("true")
+			}
+
+			installedStr := pterm.Red("false")
+			if mod.Installed {
+				installedStr = pterm.Green("true")
+			}
+
+			tableData = append(tableData, []string{
+				titleStr,
+				enabledStr,
+				installedStr,
+				cverStr,
+				lverStr,
+			})
+		}
+
+		_ = pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
+	}
 }
 
 func init() {
