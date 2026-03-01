@@ -11,11 +11,11 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list [ROOT_DIR]",
 	Short: "List the currently installed mods with versions",
-	Run: func(cmd *cobra.Command, args []string) {
-		updater, err := buildUpdater(args)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := parseConfig(cmd, args)
+		updater, err := buildUpdater(cfg)
 		if err != nil {
-			pterm.Error.Println(err)
-			return
+			return err
 		}
 
 		if pterm.RawOutput {
@@ -38,6 +38,7 @@ var listCmd = &cobra.Command{
 
 
 		printModList(updater)
+		return nil
 	},
 }
 

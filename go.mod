@@ -1,10 +1,11 @@
 module factorio-updater
 
-go 1.25.7
+go 1.26.0
 
 require (
 	github.com/pterm/pterm v0.12.82
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.32.0
 )
 

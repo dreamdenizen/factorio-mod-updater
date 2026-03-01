@@ -12,16 +12,16 @@ var updateCmd = &cobra.Command{
 	Use:    "update [ROOT_DIR]",
 	Short:  "Update all mods to their latest release",
 	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		runUpdateFlow(args)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := parseConfig(cmd, args)
+		return runUpdateFlow(cfg)
 	},
 }
 
-func runUpdateFlow(args []string) {
-	updater, err := buildUpdater(args)
+func runUpdateFlow(cfg CLIConfig) error {
+	updater, err := buildUpdater(cfg)
 	if err != nil {
-		pterm.Error.Println(err)
-		return
+		return err
 	}
 
 	if pterm.RawOutput {
@@ -48,19 +48,20 @@ func runUpdateFlow(args []string) {
 
 	if !updatesAvailable(updater) {
 		pterm.Success.Println("All mods are up to date.")
-		return
+		return nil
 	}
 
 	pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 
 	updatedCount, err := updater.UpdateMods()
 	if err != nil {
-		pterm.Error.Println("Failed to complete update:", err)
+		return fmt.Errorf("failed to complete update: %w", err)
 	} else if updatedCount == 0 {
 		pterm.Success.Println("No mod updates were required.")
 	} else {
 		pterm.Success.Printf("Update complete! Successfully updated %d mod(s).\n", updatedCount)
 	}
+	return nil
 }
 
 func updatesAvailable(updater *factorio.Updater) bool {

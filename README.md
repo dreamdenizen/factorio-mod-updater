@@ -2,6 +2,8 @@
 
 A fast, compiled CLI tool for managing and updating mods on a Factorio dedicated server. Written in Go with zero runtime dependencies. Just drop the binary onto your server and run.
 
+![Factorio Mod Updater Demo](assets/update_demo.gif)
+
 ## Features
 
 *   **One-command updates:** Fetches latest compatible releases from the [Factorio Mod Portal](https://mods.factorio.com) and downloads them automatically.

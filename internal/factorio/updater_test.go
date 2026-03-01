@@ -375,15 +375,14 @@ func TestSaveModList(t *testing.T) {
 		t.Fatalf("expected 3 mods, got %d", len(result.Mods))
 	}
 
-	// Verify alphabetical sort order
 	if result.Mods[0].Name != "alpha-mod" {
-		t.Errorf("first mod should be 'alpha-mod', got %q", result.Mods[0].Name)
+		t.Errorf("first mod should be 'alpha-mod', got %q (cmp.Compare sort failed)", result.Mods[0].Name)
 	}
 	if result.Mods[1].Name != "middle-mod" {
-		t.Errorf("second mod should be 'middle-mod', got %q", result.Mods[1].Name)
+		t.Errorf("second mod should be 'middle-mod', got %q (cmp.Compare sort failed)", result.Mods[1].Name)
 	}
 	if result.Mods[2].Name != "zebra-mod" {
-		t.Errorf("third mod should be 'zebra-mod', got %q", result.Mods[2].Name)
+		t.Errorf("third mod should be 'zebra-mod', got %q (cmp.Compare sort failed)", result.Mods[2].Name)
 	}
 
 	// Verify enabled states
@@ -453,15 +452,14 @@ func TestGetMods(t *testing.T) {
 		t.Fatalf("expected 3 mods, got %d", len(mods))
 	}
 
-	// Verify alphabetical sort by title
 	if mods[0].Title != "Alpha Mod" {
-		t.Errorf("first mod title = %q; want Alpha Mod", mods[0].Title)
+		t.Errorf("first mod title = %q; want Alpha Mod (cmp.Compare sort failed)", mods[0].Title)
 	}
 	if mods[1].Title != "Middle Mod" {
-		t.Errorf("second mod title = %q; want Middle Mod", mods[1].Title)
+		t.Errorf("second mod title = %q; want Middle Mod (cmp.Compare sort failed)", mods[1].Title)
 	}
 	if mods[2].Title != "Zebra Mod" {
-		t.Errorf("third mod title = %q; want Zebra Mod", mods[2].Title)
+		t.Errorf("third mod title = %q; want Zebra Mod (cmp.Compare sort failed)", mods[2].Title)
 	}
 
 	// Verify returned slice is independent (capacity pre-allocated)

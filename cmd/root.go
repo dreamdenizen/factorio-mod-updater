@@ -13,23 +13,24 @@ import (
 	"golang.org/x/term"
 )
 
-var (
-	username     string
-	token        string
-	settingsPath string
-	dataPath     string
-	modPath      string
-	factPath     string
-	rootDir      string
-)
+type CLIConfig struct {
+	Username     string
+	Token        string
+	SettingsPath string
+	DataPath     string
+	ModPath      string
+	FactPath     string
+	RootDir      string
+}
 
 var rootCmd = &cobra.Command{
 	Use:   "factorio-updater [ROOT_DIR]",
 	Short: "Updates mods for a target factorio installation",
 	Long:  `A modern cliff tool to manage updating and installing mods on a given Factorio server.`,
 	Args:  cobra.ArbitraryArgs,
-	Run: func(cmd *cobra.Command, args []string) {
-		runUpdateFlow(args)
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg := parseConfig(cmd, args)
+		return runUpdateFlow(cfg)
 	},
 }
 
@@ -49,24 +50,34 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&username, "username", "u", "", "factorio.com username overriding server-settings.json/player-data.json")
-	rootCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "factorio.com API token overriding server-settings.json/player-data.json")
-	rootCmd.PersistentFlags().StringVarP(&settingsPath, "server-settings", "s", "", "Absolute path to the server-settings.json file (overrides player-data.json)")
-	rootCmd.PersistentFlags().StringVarP(&dataPath, "player-data", "d", "", "Absolute path to the player-data.json file")
-	rootCmd.PersistentFlags().StringVarP(&modPath, "mod-path", "m", "", "Path to the mods directory")
-	rootCmd.PersistentFlags().StringVarP(&factPath, "bin-path", "b", "", "Path to the Factorio executable")
+	rootCmd.PersistentFlags().StringP("username", "u", "", "factorio.com username overriding server-settings.json/player-data.json")
+	rootCmd.PersistentFlags().StringP("token", "t", "", "factorio.com API token overriding server-settings.json/player-data.json")
+	rootCmd.PersistentFlags().StringP("server-settings", "s", "", "Absolute path to the server-settings.json file (overrides player-data.json)")
+	rootCmd.PersistentFlags().StringP("player-data", "d", "", "Absolute path to the player-data.json file")
+	rootCmd.PersistentFlags().StringP("mod-path", "m", "", "Path to the mods directory")
+	rootCmd.PersistentFlags().StringP("bin-path", "b", "", "Path to the Factorio executable")
+}
+
+func parseConfig(cmd *cobra.Command, args []string) CLIConfig {
+	cfg := CLIConfig{}
+	cfg.Username, _ = cmd.Flags().GetString("username")
+	cfg.Token, _ = cmd.Flags().GetString("token")
+	cfg.SettingsPath, _ = cmd.Flags().GetString("server-settings")
+	cfg.DataPath, _ = cmd.Flags().GetString("player-data")
+	cfg.ModPath, _ = cmd.Flags().GetString("mod-path")
+	cfg.FactPath, _ = cmd.Flags().GetString("bin-path")
+	if len(args) > 0 {
+		cfg.RootDir = args[0]
+	}
+	return cfg
 }
 
 // resolvePaths applies the path inference logic, deriving factPath and modPath
 // from a root directory positional argument when explicit flags are absent.
-func resolvePaths(args []string) (resolvedFactPath, resolvedModPath string, err error) {
-	rd := rootDir
-	fp := factPath
-	mp := modPath
-
-	if len(args) > 0 {
-		rd = args[0]
-	}
+func resolvePaths(cfg CLIConfig) (resolvedFactPath, resolvedModPath string, err error) {
+	rd := cfg.RootDir
+	fp := cfg.FactPath
+	mp := cfg.ModPath
 
 	if rd != "" {
 		if fp == "" {
@@ -90,25 +101,18 @@ func resolvePaths(args []string) (resolvedFactPath, resolvedModPath string, err 
 
 // buildUpdater resolves paths from CLI args/flags and constructs a fully
 // initialized Updater ready for metadata resolution and mod operations.
-func buildUpdater(args []string) (*factorio.Updater, error) {
-	resolvedFactPath, resolvedModPath, err := resolvePaths(args)
+func buildUpdater(cfg CLIConfig) (*factorio.Updater, error) {
+	resolvedFactPath, resolvedModPath, err := resolvePaths(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// Apply resolved paths back to package vars for consistency
-	factPath = resolvedFactPath
-	modPath = resolvedModPath
-	if len(args) > 0 {
-		rootDir = args[0]
-	}
-
 	return factorio.NewUpdater(
-		settingsPath,
-		dataPath,
-		modPath,
-		factPath,
-		username,
-		token,
+		cfg.SettingsPath,
+		cfg.DataPath,
+		resolvedModPath,
+		resolvedFactPath,
+		cfg.Username,
+		cfg.Token,
 	)
 }

@@ -1,6 +1,7 @@
 package factorio
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha1" // #nosec G505 - SHA-1 is mandated by the Factorio Mod Portal API for download validation.
 	"encoding/hex"
@@ -8,17 +9,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pterm/pterm"
+	"golang.org/x/sync/errgroup"
 )
 
 // Package-level compiled regexps to avoid repeated compilation on every call.
@@ -102,7 +107,21 @@ func NewUpdater(settingsPath, dataPath, modPath, factPath, username, token strin
 		username:     username,
 		token:        token,
 		mods:         make(map[string]*ModData),
-		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				ResponseHeaderTimeout: 10 * time.Second,
+			},
+		},
 	}
 
 	if u.username == "" || u.token == "" {
@@ -210,8 +229,13 @@ func (u *Updater) parseTokens() error {
 
 // determineVersion executes the Factorio binary with --version and parses
 // the major.minor version string from its output.
+// Why: Context timeout prevents the application from hanging indefinitely if
+// the local factorio executable is artificially slow or blocking.
 func (u *Updater) determineVersion() error {
-	cmd := exec.Command(u.factPath, "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, u.factPath, "--version")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("running factorio binary %q: %w", u.factPath, err)
@@ -357,13 +381,35 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 // dependencies before executing any destructive filesystem modifications.
 func (u *Updater) ResolveMetadata() error {
 	var errs []error
+	
+	// mu protects the errs slice during concurrent metadata hydration requests, 
+	// preventing data races.
+	var mu sync.Mutex
+	
+	// eg bounds concurrent HTTP fetches. Waiting on this group explicitly blocks
+	// function exit until all Goroutines complete, actively preventing memory leaks.
+	eg := new(errgroup.Group)
+	eg.SetLimit(10)
+
+	// Collect and sort mod names to ensure deterministic network dispatch order
+	var modNames []string
+	for mod := range u.mods {
+		modNames = append(modNames, mod)
+	}
+	slices.Sort(modNames)
 
 	// Fetch metadata for all initially tracked mods
-	for mod := range u.mods {
-		if err := u.RetrieveModMetadata(mod); err != nil {
-			errs = append(errs, err)
-		}
+	for _, mod := range modNames {
+		eg.Go(func() error {
+			if err := u.RetrieveModMetadata(mod); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+			return nil
+		})
 	}
+	_ = eg.Wait()
 
 	// Resolve missing transitive deps dynamically
 	for {
@@ -397,16 +443,33 @@ func (u *Updater) ResolveMetadata() error {
 			break
 		}
 
+		var newModNames []string
 		for m := range missingMods {
+			newModNames = append(newModNames, m)
 			u.mods[m] = &ModData{
 				Name:    m,
 				Title:   m,
 				Enabled: true,
 			}
-			if err := u.RetrieveModMetadata(m); err != nil {
-				errs = append(errs, err)
-			}
 		}
+		slices.Sort(newModNames)
+
+		// egDeps bounds concurrent missing dependency metadata fetches. 
+		// Guaranteeing we await all Goroutines averts memory leaks on closure.
+		egDeps := new(errgroup.Group)
+		egDeps.SetLimit(10)
+
+		for _, m := range newModNames {
+			egDeps.Go(func() error {
+				if err := u.RetrieveModMetadata(m); err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+				return nil
+			})
+		}
+		_ = egDeps.Wait()
 	}
 
 	if len(errs) > 0 {
@@ -426,8 +489,8 @@ func (u *Updater) GetMods() []*ModData {
 		list = append(list, m)
 	}
 
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].Title < list[j].Title
+	slices.SortFunc(list, func(a, b *ModData) int {
+		return cmp.Compare(a.Title, b.Title)
 	})
 
 	return list
@@ -449,8 +512,8 @@ func (u *Updater) saveModList() error {
 		out.Mods = append(out.Mods, modEntry{Name: mod, Enabled: data.Enabled})
 	}
 
-	sort.Slice(out.Mods, func(i, j int) bool {
-		return out.Mods[i].Name < out.Mods[j].Name
+	slices.SortFunc(out.Mods, func(a, b modEntry) int {
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	modListPath := filepath.Join(u.modPath, "mod-list.json")
@@ -465,7 +528,16 @@ func (u *Updater) saveModList() error {
 		return fmt.Errorf("marshalling mod-list: %w", err)
 	}
 
-	return os.WriteFile(modListPath, bytes, 0600)
+	tmpPath := modListPath + ".tmp"
+	if err := os.WriteFile(tmpPath, bytes, 0600); err != nil {
+		return fmt.Errorf("writing mod-list to temporary file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, modListPath); err != nil {
+		return fmt.Errorf("atomically renaming mod-list: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateMods iterates over all tracked mods, pruning outdated releases and
@@ -475,23 +547,60 @@ func (u *Updater) saveModList() error {
 // successfully updated mods even during partial Mod Portal outages.
 func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
-	updatedCount := 0
+	var updatedCount int32
+	
+	// mu provides thread-safe appends to the errs slice across parallel downloads.
+	var mu sync.Mutex
 
-	for mod, data := range u.mods {
+	var multi *pterm.MultiPrinter
+	if !pterm.RawOutput {
+		multi, _ = pterm.DefaultMultiPrinter.Start()
+	}
+
+	// eg bounds concurrent mod port API downloads to 5 parallel Goroutines.
+	// We wait on the group at the end to ensure no runaway Goroutines or memory leaks.
+	eg := new(errgroup.Group)
+	eg.SetLimit(5)
+
+	sortedMods := u.GetMods()
+	for _, data := range sortedMods {
+		mod := data.Name
+		eg.Go(func() error {
+			if data.Latest == nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("metadata or release missing for mod %q on factorio version %q", data.Name, u.factVersion))
+				mu.Unlock()
+				return nil
+			}
+
+			didUpdate, err := u.downloadLatest(mod, multi)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
+				mu.Unlock()
+				return nil
+			}
+
+			if didUpdate {
+				atomic.AddInt32(&updatedCount, 1)
+			}
+			return nil
+		})
+	}
+	_ = eg.Wait()
+
+	if multi != nil {
+		_, _ = multi.Stop()
+		fmt.Println() // Flush cursor downward to prevent print masking
+	}
+
+	// Safely prune old mod releases sequentially after rendering stops
+	for _, data := range sortedMods {
 		if data.Latest == nil {
-			errs = append(errs, fmt.Errorf("metadata or release missing for mod %q on factorio version %q", data.Name, u.factVersion))
 			continue
 		}
-
-		if err := u.pruneOld(mod); err != nil {
-			errs = append(errs, fmt.Errorf("pruning old releases for %q: %w", mod, err))
-		}
-		didUpdate, err := u.downloadLatest(mod)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
-		}
-		if didUpdate {
-			updatedCount++
+		if err := u.pruneOld(data.Name); err != nil {
+			errs = append(errs, fmt.Errorf("pruning old releases for %q: %w", data.Name, err))
 		}
 	}
 
@@ -499,14 +608,23 @@ func (u *Updater) UpdateMods() (int, error) {
 		errs = append(errs, fmt.Errorf("saving mod-list: %w", err))
 	}
 
-	return updatedCount, errors.Join(errs...)
+	return int(updatedCount), errors.Join(errs...)
 }
 
 // pruneOld removes all versioned zip files for the given mod that do not
-// match the latest release version.
+// match the latest release version, ONLY if the latest version exists on disk.
 func (u *Updater) pruneOld(mod string) error {
 	data := u.mods[mod]
 	latestVersion := data.Latest.Version
+	
+	// Sanitize against directory traversal payloads
+	safeFileName := filepath.Base(filepath.Clean(data.Latest.FileName))
+	latestPath := filepath.Join(u.modPath, safeFileName)
+
+	if _, err := os.Stat(latestPath); os.IsNotExist(err) {
+		// Newest version wasn't downloaded or is missing. Abort pruning to remain safe.
+		return nil
+	}
 
 	files, err := os.ReadDir(u.modPath)
 	if err != nil {
@@ -534,11 +652,13 @@ func (u *Updater) pruneOld(mod string) error {
 
 // downloadLatest checks whether the given mod needs a download (new install,
 // version mismatch, or hash mismatch) and fetches it from the Mod Portal.
-func (u *Updater) downloadLatest(mod string) (bool, error) {
+func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, error) {
 	data := u.mods[mod]
 	latest := data.Latest
 
-	targetPath := filepath.Join(u.modPath, latest.FileName)
+	// Sanitize against directory traversal payloads
+	safeFileName := filepath.Base(filepath.Clean(latest.FileName))
+	targetPath := filepath.Join(u.modPath, safeFileName)
 
 	needsDownload := false
 	if data.Installed {
@@ -550,7 +670,7 @@ func (u *Updater) downloadLatest(mod string) (bool, error) {
 			if !validateSHA1(latest.Sha1, targetPath) {
 				needsDownload = true
 			} else {
-				if !pterm.RawOutput {
+				if pterm.RawOutput || multi == nil {
 					pterm.Success.Printf("Validated %s (%s)\n", data.Title, data.Version)
 				}
 			}
@@ -574,18 +694,23 @@ func (u *Updater) downloadLatest(mod string) (bool, error) {
 	dlURL.RawQuery = q.Encode()
 
 	var p *pterm.ProgressbarPrinter
-	if pterm.RawOutput {
-		fmt.Printf("Downloading %s (%s)...\n", data.Title, latest.Version)
+	if !pterm.RawOutput && multi != nil {
+		pWriter := multi.NewWriter()
+		p, _ = pterm.DefaultProgressbar.WithTotal(100).WithWriter(pWriter).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
 	} else {
-		p, _ = pterm.DefaultProgressbar.WithTotal(100).WithTitle(fmt.Sprintf("Downloading %s (%s)", data.Title, latest.Version)).Start()
+		pterm.Info.Printf("Downloading %s (%s)...\n", data.Title, latest.Version)
 	}
 
 	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
-		pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
+		if pterm.RawOutput || multi == nil {
+			pterm.Error.Printf("Failed to download %s: %v\n", data.Title, err)
+		}
 		return false, err
 	}
 
-	pterm.Success.Printf("Downloaded %s\n", data.Title)
+	if pterm.RawOutput || multi == nil {
+		pterm.Success.Printf("Downloaded %s\n", data.Title)
+	}
 	return true, nil
 }
 
@@ -628,9 +753,10 @@ func downloadFile(client *http.Client, targetPath string, dlURL string, p *pterm
 		return fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	out, err := os.Create(targetPath)
+	tmpPath := targetPath + ".tmp"
+	out, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("creating file %s: %w", targetPath, err)
+		return fmt.Errorf("creating file %s: %w", tmpPath, err)
 	}
 	defer func() { _ = out.Close() }()
 
@@ -644,18 +770,28 @@ func downloadFile(client *http.Client, targetPath string, dlURL string, p *pterm
 			_, _ = p.Stop()
 		}
 		_ = out.Close()
-		_ = os.Remove(targetPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("writing download data: %w", err)
 	}
 	if p != nil {
 		_, _ = p.Stop()
 	}
 
+	// Ensure file is flushed and closed before reading it for validation
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("flushing to disk %s: %w", tmpPath, err)
+	}
+
 	// #nosec G401 - SHA-1 is mandated by the Factorio Mod Portal API.
-	if !validateSHA1(expectedHash, targetPath) {
+	if !validateSHA1(expectedHash, tmpPath) {
 		// Clean up corrupted download
-		_ = os.Remove(targetPath)
-		return fmt.Errorf("SHA-1 validation failed for %s", targetPath)
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("SHA-1 validation failed for %s", tmpPath)
+	}
+
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("atomically renaming download: %w", err)
 	}
 
 	return nil

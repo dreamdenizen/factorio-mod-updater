@@ -7,23 +7,11 @@ import (
 	"testing"
 )
 
-// resetPackageVars zeroes out all package-level path vars between test cases
-// to prevent cross-contamination from shared mutable state.
-func resetPackageVars() {
-	rootDir = ""
-	factPath = ""
-	modPath = ""
-	settingsPath = ""
-	dataPath = ""
-	username = ""
-	token = ""
-}
 
 func TestResolvePaths(t *testing.T) {
 	t.Run("no args and no flags returns error", func(t *testing.T) {
-		resetPackageVars()
-
-		_, _, err := resolvePaths([]string{})
+		cfg := CLIConfig{}
+		_, _, err := resolvePaths(cfg)
 		if err == nil {
 			t.Fatal("expected an error when no paths are provided")
 		}
@@ -33,9 +21,8 @@ func TestResolvePaths(t *testing.T) {
 	})
 
 	t.Run("positional arg infers bin-path and mod-path", func(t *testing.T) {
-		resetPackageVars()
-
-		fp, mp, err := resolvePaths([]string{"/opt/factorio"})
+		cfg := CLIConfig{RootDir: "/opt/factorio"}
+		fp, mp, err := resolvePaths(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -59,10 +46,11 @@ func TestResolvePaths(t *testing.T) {
 	})
 
 	t.Run("explicit --bin-path is not overwritten by rootDir", func(t *testing.T) {
-		resetPackageVars()
-		factPath = "/custom/bin/factorio"
-
-		fp, mp, err := resolvePaths([]string{"/opt/factorio"})
+		cfg := CLIConfig{
+			RootDir:  "/opt/factorio",
+			FactPath: "/custom/bin/factorio",
+		}
+		fp, mp, err := resolvePaths(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -76,10 +64,11 @@ func TestResolvePaths(t *testing.T) {
 	})
 
 	t.Run("explicit --mod-path is not overwritten by rootDir", func(t *testing.T) {
-		resetPackageVars()
-		modPath = "/custom/mods"
-
-		fp, _, err := resolvePaths([]string{"/opt/factorio"})
+		cfg := CLIConfig{
+			RootDir: "/opt/factorio",
+			ModPath: "/custom/mods",
+		}
+		fp, _, err := resolvePaths(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -93,11 +82,11 @@ func TestResolvePaths(t *testing.T) {
 	})
 
 	t.Run("explicit flags without rootDir work", func(t *testing.T) {
-		resetPackageVars()
-		factPath = "/explicit/factorio"
-		modPath = "/explicit/mods"
-
-		fp, mp, err := resolvePaths([]string{})
+		cfg := CLIConfig{
+			FactPath: "/explicit/factorio",
+			ModPath:  "/explicit/mods",
+		}
+		fp, mp, err := resolvePaths(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -111,20 +100,20 @@ func TestResolvePaths(t *testing.T) {
 	})
 
 	t.Run("only --bin-path set without --mod-path returns error", func(t *testing.T) {
-		resetPackageVars()
-		factPath = "/some/bin/factorio"
-
-		_, _, err := resolvePaths([]string{})
+		cfg := CLIConfig{
+			FactPath: "/some/bin/factorio",
+		}
+		_, _, err := resolvePaths(cfg)
 		if err == nil {
 			t.Fatal("expected error when --mod-path is missing")
 		}
 	})
 
 	t.Run("only --mod-path set without --bin-path returns error", func(t *testing.T) {
-		resetPackageVars()
-		modPath = "/some/mods"
-
-		_, _, err := resolvePaths([]string{})
+		cfg := CLIConfig{
+			ModPath: "/some/mods",
+		}
+		_, _, err := resolvePaths(cfg)
 		if err == nil {
 			t.Fatal("expected error when --bin-path is missing")
 		}
