@@ -26,7 +26,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "factorio-updater [ROOT_DIR]",
 	Short: "Updates mods for a target factorio installation",
-	Long:  `A modern, highly parallelized cliff tool to manage updating and installing mods on a given Factorio server.`,
+	Long:  `A modern cliff tool to manage updating and installing mods on a given Factorio server.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runUpdateFlow(args)
 	},
