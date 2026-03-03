@@ -278,7 +278,7 @@ func (u *Updater) determineVersion() error {
 func (u *Updater) parseModList() error {
 	modListPath := filepath.Join(u.modPath, "mod-list.json")
 	data, err := os.ReadFile(modListPath)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("reading mod-list.json: %w", err)
 	}
 
@@ -290,18 +290,20 @@ func (u *Updater) parseModList() error {
 		Mods []modEntry `json:"mods"`
 	}
 
-	if err := json.Unmarshal(data, &modList); err != nil {
-		return fmt.Errorf("parsing mod-list.json: %w", err)
-	}
-
-	for _, m := range modList.Mods {
-		if isBuiltInMod(m.Name) {
-			continue
+	if data != nil {
+		if err := json.Unmarshal(data, &modList); err != nil {
+			return fmt.Errorf("parsing mod-list.json: %w", err)
 		}
-		u.mods[m.Name] = &ModData{
-			Name:    m.Name,
-			Enabled: m.Enabled,
-			Title:   m.Name, // Default to name until metadata resolves it
+
+		for _, m := range modList.Mods {
+			if isBuiltInMod(m.Name) {
+				continue
+			}
+			u.mods[m.Name] = &ModData{
+				Name:    m.Name,
+				Enabled: m.Enabled,
+				Title:   m.Name, // Default to name until metadata resolves it
+			}
 		}
 	}
 
