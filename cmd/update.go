@@ -54,7 +54,11 @@ func runUpdateFlow(cfg CLIConfig) error {
 		return nil
 	}
 
-	pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
+	if pterm.RawOutput {
+		fmt.Println("Updating mods...")
+	} else {
+		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
+	}
 
 	updatedCount, err := updater.UpdateMods()
 	var finalMsg string
@@ -63,9 +67,14 @@ func runUpdateFlow(cfg CLIConfig) error {
 	} else if updatedCount == 0 {
 		finalMsg = "No mod updates were required."
 		pterm.Success.Println(finalMsg)
-	} else {
-		finalMsg = fmt.Sprintf("Update complete! Successfully updated %d mod(s).", updatedCount)
-		pterm.Success.Printf("%s\n", finalMsg)
+		if pterm.RawOutput {
+			totalMods := len(updater.GetMods())
+			finalMsg = fmt.Sprintf("Summary: %d mods updated | All %d mods are up to date", updatedCount, totalMods)
+			fmt.Println(finalMsg)
+		} else {
+			finalMsg = fmt.Sprintf("Update complete! Successfully updated %d mod(s).", updatedCount)
+			pterm.Success.Printf("%s\n", finalMsg)
+		}
 	}
 	
 	updater.WriteLog("%s", finalMsg)

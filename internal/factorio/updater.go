@@ -728,9 +728,6 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	}
 
 	u.WriteLog("Downloaded %s (%s)", data.Title, latest.Version)
-	if pterm.RawOutput {
-		pterm.Info.Printf("Downloaded %s (%s)\n", data.Title, latest.Version)
-	}
 	return true, nil
 }
 
