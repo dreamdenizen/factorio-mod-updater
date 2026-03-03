@@ -66,7 +66,14 @@ func runUpdateFlow(cfg CLIConfig) error {
 		finalMsg = fmt.Sprintf("Failed to complete update: %v", err)
 	} else if updatedCount == 0 {
 		finalMsg = "No mod updates were required."
-		pterm.Success.Println(finalMsg)
+		if pterm.RawOutput {
+			totalMods := len(updater.GetMods())
+			finalMsg = fmt.Sprintf("Summary: 0 mods updated | All %d mods are up to date", totalMods)
+			fmt.Println(finalMsg)
+		} else {
+			pterm.Success.Println(finalMsg)
+		}
+	} else {
 		if pterm.RawOutput {
 			totalMods := len(updater.GetMods())
 			finalMsg = fmt.Sprintf("Summary: %d mods updated | All %d mods are up to date", updatedCount, totalMods)
