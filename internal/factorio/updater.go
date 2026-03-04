@@ -605,17 +605,13 @@ func (u *Updater) UpdateMods() (int, error) {
 			defer heartbeatWg.Done()
 			t := time.NewTicker(4 * time.Second)
 			defer t.Stop()
-			printed := false
 			for {
 				select {
 				case <-t.C:
 					pterm.Print(".")
 					os.Stdout.Sync()
-					printed = true
 				case <-ctx.Done():
-					if printed {
-						pterm.Println() // Flush to a clean line when downloads finish
-					}
+					pterm.Println() // Flush to a clean line when downloads finish
 					return
 				}
 			}

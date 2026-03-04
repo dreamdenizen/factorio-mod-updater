@@ -56,7 +56,7 @@ func runUpdateFlow(cfg CLIConfig) error {
 	}
 
 	if pterm.RawOutput {
-		pterm.Println("Updating mods...")
+		pterm.Print("Updating mods...")
 	} else {
 		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 	}
