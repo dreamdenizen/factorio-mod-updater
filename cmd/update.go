@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// updateCmd defines the hidden "update" subcommand retained for backward
+// compatibility with existing scripts that invoke it explicitly.
 var updateCmd = &cobra.Command{
 	Use:    "update [ROOT_DIR]",
 	Short:  "Update all mods to their latest release",
@@ -19,29 +21,15 @@ var updateCmd = &cobra.Command{
 	},
 }
 
+// runUpdateFlow orchestrates the full update lifecycle: metadata resolution,
+// mod status display, download of outdated mods, pruning, and log persistence.
 func runUpdateFlow(cfg CLIConfig) error {
 	updater, err := buildUpdater(cfg)
 	if err != nil {
 		return err
 	}
 
-	if pterm.RawOutput {
-		pterm.Info.Println("Starting Factorio Mod Updater (Update Mode)...")
-		pterm.Println("Fetching metadata and resolving dependencies...")
-		err = updater.ResolveMetadata()
-		if err != nil {
-			pterm.Warning.Println("Some metadata could not be resolved:", err)
-		}
-		pterm.Success.Println("Metadata resolution complete")
-	} else {
-		spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
-		err = updater.ResolveMetadata()
-		if err != nil {
-			spinner.Warning("Some metadata could not be resolved")
-		} else {
-			spinner.Success("Metadata fully resolved")
-		}
-	}
+	resolveWithUI(updater, "Update")
 
 	pterm.Println()
 	summaryStr := printModList(updater)
@@ -96,6 +84,8 @@ func runUpdateFlow(cfg CLIConfig) error {
 	return nil
 }
 
+// updatesAvailable returns true if any tracked mod is missing, uninstalled,
+// or has a version that differs from the latest compatible release.
 func updatesAvailable(updater *factorio.Updater) bool {
 	for _, mod := range updater.GetMods() {
 		if mod.Latest == nil {

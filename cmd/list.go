@@ -4,10 +4,12 @@ import (
 	"fmt"
 
 	"factorio-updater/internal/factorio"
+
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
 
+// listCmd defines the "list" subcommand for read-only mod status display.
 var listCmd = &cobra.Command{
 	Use:   "list [ROOT_DIR]",
 	Short: "List the currently installed mods with versions",
@@ -18,24 +20,7 @@ var listCmd = &cobra.Command{
 			return err
 		}
 
-		if pterm.RawOutput {
-			pterm.Info.Println("Starting Factorio Mod Updater (List Mode)...")
-			pterm.Println("Fetching metadata and resolving dependencies...")
-			err = updater.ResolveMetadata()
-			if err != nil {
-				pterm.Warning.Println("Some metadata could not be resolved:", err)
-			}
-			pterm.Success.Println("Metadata resolution complete")
-		} else {
-			spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
-			err = updater.ResolveMetadata()
-			if err != nil {
-				spinner.Warning("Some metadata could not be resolved")
-			} else {
-				spinner.Success("Metadata fully resolved")
-			}
-		}
-
+		resolveWithUI(updater, "List")
 
 		_ = printModList(updater)
 		return nil

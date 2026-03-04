@@ -14,6 +14,8 @@ import (
 	"golang.org/x/term"
 )
 
+// CLIConfig holds the parsed command-line flags and positional arguments for
+// all subcommands. It is passed through to path resolution and updater construction.
 type CLIConfig struct {
 	Username     string
 	Token        string
@@ -50,8 +52,8 @@ func Execute() {
 	// AMP Workaround: Explicitly drain buffers and add a micro-delay so external log ingestors
 	// (like CubeCoders AMP) have time to read the final bytes before the pipe is torn down.
 	defer func() {
-		os.Stdout.Sync()
-		os.Stderr.Sync()
+		os.Stdout.Sync() //nolint:errcheck // Best-effort flush for AMP pipe observer
+		os.Stderr.Sync() //nolint:errcheck // Best-effort flush for AMP pipe observer
 		time.Sleep(500 * time.Millisecond)
 	}()
 
@@ -59,8 +61,8 @@ func Execute() {
 		pterm.Error.Println(err)
 
 		// os.Exit bypasses defers, so we must manually flush here as well
-		os.Stdout.Sync()
-		os.Stderr.Sync()
+		os.Stdout.Sync() //nolint:errcheck // Best-effort flush for AMP pipe observer
+		os.Stderr.Sync() //nolint:errcheck // Best-effort flush for AMP pipe observer
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(1)
 	}
@@ -75,6 +77,8 @@ func init() {
 	rootCmd.PersistentFlags().StringP("bin-path", "b", "", "Path to the Factorio executable")
 }
 
+// parseConfig extracts CLI flag values and the optional positional ROOT_DIR
+// argument into a CLIConfig struct for downstream consumption.
 func parseConfig(cmd *cobra.Command, args []string) CLIConfig {
 	cfg := CLIConfig{}
 	cfg.Username, _ = cmd.Flags().GetString("username")
@@ -132,4 +136,28 @@ func buildUpdater(cfg CLIConfig) (*factorio.Updater, error) {
 		cfg.Username,
 		cfg.Token,
 	)
+}
+
+// resolveWithUI fetches and resolves mod metadata, displaying progress
+// through either a pterm spinner (TTY) or plain text (raw/CI output).
+// Why: Centralizes the resolve+UI logic that was previously duplicated
+// across listCmd and runUpdateFlow, enforcing DRY.
+func resolveWithUI(updater *factorio.Updater, modeName string) {
+	if pterm.RawOutput {
+		pterm.Info.Printf("Starting Factorio Mod Updater (%s Mode)...\n", modeName)
+		pterm.Println("Fetching metadata and resolving dependencies...")
+		err := updater.ResolveMetadata()
+		if err != nil {
+			pterm.Warning.Println("Some metadata could not be resolved:", err)
+		}
+		pterm.Success.Println("Metadata resolution complete")
+	} else {
+		spinner, _ := pterm.DefaultSpinner.Start("Fetching metadata and resolving dependencies...")
+		err := updater.ResolveMetadata()
+		if err != nil {
+			spinner.Warning("Some metadata could not be resolved")
+		} else {
+			spinner.Success("Metadata fully resolved")
+		}
+	}
 }
