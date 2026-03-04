@@ -598,17 +598,24 @@ func (u *Updater) UpdateMods() (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var heartbeatWg sync.WaitGroup
 	if pterm.RawOutput {
+		heartbeatWg.Add(1)
 		go func() {
+			defer heartbeatWg.Done()
 			t := time.NewTicker(4 * time.Second)
 			defer t.Stop()
+			printed := false
 			for {
 				select {
 				case <-t.C:
 					fmt.Print(".")
 					os.Stdout.Sync()
+					printed = true
 				case <-ctx.Done():
-					fmt.Println() // Flush to a clean line when downloads finish
+					if printed {
+						fmt.Println() // Flush to a clean line when downloads finish
+					}
 					return
 				}
 			}
@@ -648,6 +655,11 @@ func (u *Updater) UpdateMods() (int, error) {
 		})
 	}
 	_ = eg.Wait()
+
+	if pterm.RawOutput {
+		cancel()           // Stop the heartbeat explicitly
+		heartbeatWg.Wait() // Block until the final newline drops to prevent racing the CLI output
+	}
 
 	if multi != nil {
 		_, _ = multi.Stop()
