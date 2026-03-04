@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -53,6 +54,7 @@ type Updater struct {
 
 	factVersion string
 	mods        map[string]*ModData
+	modsMu      sync.RWMutex // guards concurrent access to the mods map
 	httpClient  *http.Client
 
 	logBuf strings.Builder
@@ -75,19 +77,26 @@ func (u *Updater) SaveLog(cliSummary string) error {
 	logPath := filepath.Join(filepath.Dir(u.modPath), "last-mod-update.log")
 	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s",
 		time.Now().Format(time.RFC3339), cliSummary, u.logBuf.String())
-	return os.WriteFile(logPath, []byte(finalLog), 0644)
+	return os.WriteFile(logPath, []byte(finalLog), 0600)
 }
 
 // ModData represents the tracked state of a single mod within the update graph.
 // Why: Normalizes state tracking between currently installed filesystem
 // representation and remote API metadata, simplifying evaluation logic.
 type ModData struct {
-	Name       string
-	Title      string
-	Enabled    bool
-	Installed  bool
-	Version    string
-	Latest     *ModRelease
+	// Name is the internal mod identifier used by the Mod Portal API (e.g. "helmod").
+	Name string
+	// Title is the human-readable display name resolved from the API.
+	Title string
+	// Enabled reflects the mod-list.json enabled flag.
+	Enabled bool
+	// Installed is true when a matching zip file exists on disk.
+	Installed bool
+	// Version is the currently installed semver string (e.g. "2.2.12").
+	Version string
+	// Latest points to the most recent compatible release from the Mod Portal, or nil.
+	Latest *ModRelease
+	// Deprecated is true when the Mod Portal marks the mod as deprecated.
 	Deprecated bool
 }
 
@@ -95,13 +104,18 @@ type ModData struct {
 // Why: Provides strict structural typing for the Factorio API's release payload,
 // enabling safe unmarshaling and reliable hash validation.
 type ModRelease struct {
+	// DownloadURL is the relative path used to fetch the release zip from the portal.
 	DownloadURL string `json:"download_url"`
-	FileName    string `json:"file_name"`
-	InfoJSON    struct {
+	// FileName is the expected zip filename on disk (e.g. "helmod_2.2.12.zip").
+	FileName string `json:"file_name"`
+	// InfoJSON contains embedded metadata from the mod's info.json.
+	InfoJSON struct {
 		FactorioVersion string   `json:"factorio_version"`
 		Dependencies    []string `json:"dependencies"`
 	} `json:"info_json"`
-	Sha1    string `json:"sha1"`
+	// Sha1 is the hex-encoded SHA-1 digest for download validation.
+	Sha1 string `json:"sha1"`
+	// Version is the semver string for this release.
 	Version string `json:"version"`
 }
 
@@ -278,7 +292,7 @@ func (u *Updater) determineVersion() error {
 func (u *Updater) parseModList() error {
 	modListPath := filepath.Join(u.modPath, "mod-list.json")
 	data, err := os.ReadFile(modListPath)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("reading mod-list.json: %w", err)
 	}
 
@@ -362,7 +376,13 @@ func versionMatch(installed, mod string) bool {
 // Why: Segregates the network IO required for metadata hydration, allowing the
 // graph resolver to iteratively fetch details precisely when new deps are discovered.
 func (u *Updater) RetrieveModMetadata(mod string) error {
+	u.modsMu.RLock()
 	m := u.mods[mod]
+	u.modsMu.RUnlock()
+
+	if m == nil {
+		return fmt.Errorf("mod %q not found in tracking map", mod)
+	}
 	apiURL := fmt.Sprintf("%s/api/mods/%s/full", u.modServerURL, url.PathEscape(mod))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -424,10 +444,12 @@ func (u *Updater) ResolveMetadata() error {
 	eg.SetLimit(10)
 
 	// Collect and sort mod names to ensure deterministic network dispatch order
+	u.modsMu.RLock()
 	var modNames []string
 	for mod := range u.mods {
 		modNames = append(modNames, mod)
 	}
+	u.modsMu.RUnlock()
 	slices.Sort(modNames)
 
 	// Fetch metadata for all initially tracked mods
@@ -447,12 +469,14 @@ func (u *Updater) ResolveMetadata() error {
 	for {
 		missingMods := make(map[string]bool)
 
+		u.modsMu.RLock()
 		for _, data := range u.mods {
 			if data.Latest == nil {
 				continue
 			}
 
 			for _, depStr := range data.Latest.InfoJSON.Dependencies {
+				depStr = strings.TrimSpace(depStr)
 				// Skip optional (?) and incompatible (!) dependencies
 				if strings.HasPrefix(depStr, "!") || strings.HasPrefix(depStr, "?") || strings.HasPrefix(depStr, "(?)") {
 					continue
@@ -470,12 +494,14 @@ func (u *Updater) ResolveMetadata() error {
 				}
 			}
 		}
+		u.modsMu.RUnlock()
 
 		if len(missingMods) == 0 {
 			break
 		}
 
 		var newModNames []string
+		u.modsMu.Lock()
 		for m := range missingMods {
 			newModNames = append(newModNames, m)
 			u.mods[m] = &ModData{
@@ -484,6 +510,7 @@ func (u *Updater) ResolveMetadata() error {
 				Enabled: true,
 			}
 		}
+		u.modsMu.Unlock()
 		slices.Sort(newModNames)
 
 		// egDeps bounds concurrent missing dependency metadata fetches.
@@ -516,10 +543,12 @@ func (u *Updater) ResolveMetadata() error {
 // Why: Ensures the CLI or structured output consumes a predictable sequence,
 // isolating map iteration randomness from the presentation tier.
 func (u *Updater) GetMods() []*ModData {
+	u.modsMu.RLock()
 	list := make([]*ModData, 0, len(u.mods))
 	for _, m := range u.mods {
 		list = append(list, m)
 	}
+	u.modsMu.RUnlock()
 
 	slices.SortFunc(list, func(a, b *ModData) int {
 		return cmp.Compare(a.Title, b.Title)
@@ -539,10 +568,12 @@ func (u *Updater) saveModList() error {
 		Mods []modEntry `json:"mods"`
 	}
 
+	u.modsMu.RLock()
 	out := modOut{Mods: make([]modEntry, 0, len(u.mods))}
 	for mod, data := range u.mods {
 		out.Mods = append(out.Mods, modEntry{Name: mod, Enabled: data.Enabled})
 	}
+	u.modsMu.RUnlock()
 
 	slices.SortFunc(out.Mods, func(a, b modEntry) int {
 		return cmp.Compare(a.Name, b.Name)
@@ -551,7 +582,7 @@ func (u *Updater) saveModList() error {
 	modListPath := filepath.Join(u.modPath, "mod-list.json")
 	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format("2006-01-02_1504.05")))
 
-	if err := os.Rename(modListPath, backupPath); err != nil && !os.IsNotExist(err) {
+	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
 	}
 
@@ -579,7 +610,7 @@ func (u *Updater) saveModList() error {
 // successfully updated mods even during partial Mod Portal outages.
 func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
-	var updatedCount int32
+	var updatedCount atomic.Int32
 
 	// mu provides thread-safe appends to the errs slice across parallel downloads.
 	var mu sync.Mutex
@@ -600,30 +631,28 @@ func (u *Updater) UpdateMods() (int, error) {
 
 	var heartbeatWg sync.WaitGroup
 	if pterm.RawOutput {
-		heartbeatWg.Add(1)
-		go func() {
-			defer heartbeatWg.Done()
+		heartbeatWg.Go(func() {
 			t := time.NewTicker(4 * time.Second)
 			defer t.Stop()
 			for {
 				select {
 				case <-t.C:
 					pterm.Print(".")
-					os.Stdout.Sync()
+					os.Stdout.Sync() //nolint:errcheck // Best-effort heartbeat flush
 				case <-ctx.Done():
 					pterm.Println() // Flush to a clean line when downloads finish
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	// eg bounds concurrent mod port API downloads to 5 parallel Goroutines.
 	// We wait on the group at the end to ensure no runaway Goroutines or memory leaks.
 	eg := new(errgroup.Group)
+	eg.SetLimit(5) // Bound concurrent downloads to prevent Mod Portal rate-limiting
 	sortedMods := u.GetMods()
 	for _, data := range sortedMods {
-		mod := data.Name
 		eg.Go(func() error {
 			if data.Latest == nil {
 				mu.Lock()
@@ -632,11 +661,11 @@ func (u *Updater) UpdateMods() (int, error) {
 				return nil
 			}
 
-			didUpdate, err := u.downloadLatest(mod, multi)
+			didUpdate, err := u.downloadLatest(data.Name, multi)
 
 			mu.Lock()
 			if err != nil {
-				errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
+				errs = append(errs, fmt.Errorf("downloading %q: %w", data.Name, err))
 			}
 			mu.Unlock()
 
@@ -645,7 +674,7 @@ func (u *Updater) UpdateMods() (int, error) {
 			}
 
 			if didUpdate {
-				atomic.AddInt32(&updatedCount, 1)
+				updatedCount.Add(1)
 			}
 			return nil
 		})
@@ -676,20 +705,26 @@ func (u *Updater) UpdateMods() (int, error) {
 		errs = append(errs, fmt.Errorf("saving mod-list: %w", err))
 	}
 
-	return int(updatedCount), errors.Join(errs...)
+	return int(updatedCount.Load()), errors.Join(errs...)
 }
 
 // pruneOld removes all versioned zip files for the given mod that do not
 // match the latest release version, ONLY if the latest version exists on disk.
 func (u *Updater) pruneOld(mod string) error {
 	data := u.mods[mod]
+	if data == nil || data.Latest == nil {
+		return nil
+	}
+	if data.Latest.FileName == "" {
+		return fmt.Errorf("latest release for %q has empty filename, skipping prune", mod)
+	}
 	latestVersion := data.Latest.Version
 
 	// Sanitize against directory traversal payloads
 	safeFileName := filepath.Base(filepath.Clean(data.Latest.FileName))
 	latestPath := filepath.Join(u.modPath, safeFileName)
 
-	if _, err := os.Stat(latestPath); os.IsNotExist(err) {
+	if _, err := os.Stat(latestPath); errors.Is(err, fs.ErrNotExist) {
 		// Newest version wasn't downloaded or is missing. Abort pruning to remain safe.
 		return nil
 	}
@@ -699,21 +734,25 @@ func (u *Updater) pruneOld(mod string) error {
 		return fmt.Errorf("reading mod directory: %w", err)
 	}
 
-	pattern := regexp.MustCompile(fmt.Sprintf(`^%s_(\d+\.\d+\.\d+)\.zip$`, regexp.QuoteMeta(mod)))
+	prefix := mod + "_"
 
 	for _, f := range files {
 		if f.IsDir() {
 			continue
 		}
-		match := pattern.FindStringSubmatch(f.Name())
-		if len(match) == 2 && match[1] != latestVersion {
-			removePath := filepath.Join(u.modPath, f.Name())
+		name := f.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		match := modZipRe.FindStringSubmatch(name)
+		if len(match) == 3 && match[1] == mod && match[2] != latestVersion {
+			removePath := filepath.Join(u.modPath, name)
 			if err := os.Remove(removePath); err != nil {
-				return fmt.Errorf("removing %s: %w", f.Name(), err)
+				return fmt.Errorf("removing %s: %w", name, err)
 			}
-			u.WriteLog("Removed old release: %s", f.Name())
+			u.WriteLog("Removed old release: %s", name)
 			if !pterm.RawOutput {
-				pterm.Info.Printf("Removed old release: %s\n", f.Name())
+				pterm.Info.Printf("Removed old release: %s\n", name)
 			}
 		}
 	}
@@ -727,6 +766,10 @@ func (u *Updater) pruneOld(mod string) error {
 func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, error) {
 	data := u.mods[mod]
 	latest := data.Latest
+
+	if latest.FileName == "" {
+		return false, fmt.Errorf("latest release for %q has empty filename", mod)
+	}
 
 	// Sanitize against directory traversal payloads
 	safeFileName := filepath.Base(filepath.Clean(latest.FileName))
@@ -807,14 +850,14 @@ func downloadFile(client *http.Client, targetPath string, dlURL string, p *pterm
 	}
 
 	tmpPath := targetPath + ".tmp"
-	out, err := os.Create(tmpPath)
+	out, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("creating file %s: %w", tmpPath, err)
 	}
 	defer func() { _ = out.Close() }()
 
 	counter := &writeCounter{
-		Total:    uint64(resp.ContentLength),
+		Total:    uint64(max(resp.ContentLength, 0)),
 		Progress: p,
 	}
 
@@ -864,10 +907,7 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 	n := len(p)
 	wc.Current += uint64(n)
 	if wc.Total > 0 && wc.Progress != nil {
-		pct := int(float64(wc.Current) / float64(wc.Total) * 100)
-		if pct > 100 {
-			pct = 100
-		}
+		pct := min(int(float64(wc.Current)/float64(wc.Total)*100), 100)
 		wc.Progress.Add(pct - wc.Progress.Current)
 	}
 	return n, nil

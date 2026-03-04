@@ -112,8 +112,8 @@ func TestParseModList(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Write a mod-list.json that includes built-in and real mods
-	modList := map[string]interface{}{
-		"mods": []map[string]interface{}{
+	modList := map[string]any{
+		"mods": []map[string]any{
 			{"name": "base", "enabled": true},
 			{"name": "space-age", "enabled": true},
 			{"name": "quality", "enabled": true},
@@ -343,9 +343,9 @@ func TestSaveModList(t *testing.T) {
 	u := &Updater{
 		modPath: tmpDir,
 		mods: map[string]*ModData{
-			"zebra-mod":   {Name: "zebra-mod", Enabled: true},
-			"alpha-mod":   {Name: "alpha-mod", Enabled: false},
-			"middle-mod":  {Name: "middle-mod", Enabled: true},
+			"zebra-mod":  {Name: "zebra-mod", Enabled: true},
+			"alpha-mod":  {Name: "alpha-mod", Enabled: false},
+			"middle-mod": {Name: "middle-mod", Enabled: true},
 		},
 	}
 
@@ -515,55 +515,91 @@ func TestWriteCounter(t *testing.T) {
 }
 
 func TestPruneOld(t *testing.T) {
-	tmpDir := t.TempDir()
+	t.Run("removes old versions and keeps latest", func(t *testing.T) {
+		tmpDir := t.TempDir()
 
-	// Create multiple versioned zips for "helmod"
-	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("old1"), 0644)
-	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.5.zip"), []byte("old2"), 0644)
-	_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("latest"), 0644)
+		// Create multiple versioned zips for "helmod"
+		_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("old1"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.5.zip"), []byte("old2"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.2.12.zip"), []byte("latest"), 0644)
 
-	// Create an unrelated mod zip (should not be touched)
-	_ = os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("other"), 0644)
+		// Create an unrelated mod zip (should not be touched)
+		_ = os.WriteFile(filepath.Join(tmpDir, "jetpack_0.4.15.zip"), []byte("other"), 0644)
 
-	// Create a non-zip file (should not be touched)
-	_ = os.WriteFile(filepath.Join(tmpDir, "README.txt"), []byte("readme"), 0644)
+		// Create a non-zip file (should not be touched)
+		_ = os.WriteFile(filepath.Join(tmpDir, "README.txt"), []byte("readme"), 0644)
 
-	u := &Updater{
-		modPath: tmpDir,
-		mods: map[string]*ModData{
-			"helmod": {
-				Name: "helmod",
-				Latest: &ModRelease{
-					Version: "2.2.12",
+		u := &Updater{
+			modPath: tmpDir,
+			mods: map[string]*ModData{
+				"helmod": {
+					Name: "helmod",
+					Latest: &ModRelease{
+						Version:  "2.2.12",
+						FileName: "helmod_2.2.12.zip",
+					},
 				},
 			},
-		},
-	}
+		}
 
-	if err := u.pruneOld("helmod"); err != nil {
-		t.Fatalf("pruneOld() returned unexpected error: %v", err)
-	}
+		if err := u.pruneOld("helmod"); err != nil {
+			t.Fatalf("pruneOld() returned unexpected error: %v", err)
+		}
 
-	// Verify old versions were removed
-	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.0.zip")); !os.IsNotExist(err) {
-		t.Error("helmod_2.1.0.zip should have been pruned")
-	}
-	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.5.zip")); !os.IsNotExist(err) {
-		t.Error("helmod_2.1.5.zip should have been pruned")
-	}
+		// Verify old versions were removed
+		if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.0.zip")); !os.IsNotExist(err) {
+			t.Error("helmod_2.1.0.zip should have been pruned")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.1.5.zip")); !os.IsNotExist(err) {
+			t.Error("helmod_2.1.5.zip should have been pruned")
+		}
 
-	// Verify latest version was kept
-	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.2.12.zip")); err != nil {
-		t.Error("helmod_2.2.12.zip (latest) should NOT have been pruned")
-	}
+		// Verify latest version was kept
+		if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.2.12.zip")); err != nil {
+			t.Error("helmod_2.2.12.zip (latest) should NOT have been pruned")
+		}
 
-	// Verify unrelated files were not touched
-	if _, err := os.Stat(filepath.Join(tmpDir, "jetpack_0.4.15.zip")); err != nil {
-		t.Error("jetpack_0.4.15.zip should NOT have been touched")
-	}
-	if _, err := os.Stat(filepath.Join(tmpDir, "README.txt")); err != nil {
-		t.Error("README.txt should NOT have been touched")
-	}
+		// Verify unrelated files were not touched
+		if _, err := os.Stat(filepath.Join(tmpDir, "jetpack_0.4.15.zip")); err != nil {
+			t.Error("jetpack_0.4.15.zip should NOT have been touched")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "README.txt")); err != nil {
+			t.Error("README.txt should NOT have been touched")
+		}
+	})
+
+	t.Run("empty filename returns error without deleting files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create files that should NOT be deleted
+		_ = os.WriteFile(filepath.Join(tmpDir, "helmod_2.1.0.zip"), []byte("keep"), 0644)
+
+		u := &Updater{
+			modPath: tmpDir,
+			mods: map[string]*ModData{
+				"helmod": {
+					Name: "helmod",
+					Latest: &ModRelease{
+						Version:  "2.1.0",
+						FileName: "", // empty filename — dangerous without guard
+					},
+				},
+			},
+		}
+
+		err := u.pruneOld("helmod")
+		if err == nil {
+			t.Fatal("pruneOld() should return error for empty FileName")
+		}
+		if !strings.Contains(err.Error(), "empty filename") {
+			t.Errorf("error should mention empty filename, got: %v", err)
+		}
+
+		// Verify no files were deleted
+		if _, statErr := os.Stat(filepath.Join(tmpDir, "helmod_2.1.0.zip")); statErr != nil {
+			t.Error("helmod_2.1.0.zip should NOT have been deleted when FileName is empty")
+		}
+	})
 }
 
 func TestDownloadFile(t *testing.T) {
@@ -639,6 +675,235 @@ func TestDownloadFile(t *testing.T) {
 		// Partial file should have been cleaned up (CR-4)
 		if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
 			t.Error("partial file should have been removed after io.Copy error")
+		}
+	})
+}
+
+// --- Unit test for ResolveMetadata using httptest ---
+
+func TestResolveMetadata(t *testing.T) {
+	t.Run("resolves transitive dependencies", func(t *testing.T) {
+		// Mock API: "mod-a" depends on "mod-b", "mod-b" has no further deps.
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/mods/mod-a/full":
+				resp := ModPortalMetadata{
+					Title: "Mod A",
+					Releases: []ModRelease{
+						{
+							Version:     "1.0.0",
+							DownloadURL: "/download/mod-a",
+							FileName:    "mod-a_1.0.0.zip",
+							Sha1:        "aaa",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{"mod-b >= 1.0.0"},
+							},
+						},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/api/mods/mod-b/full":
+				resp := ModPortalMetadata{
+					Title: "Mod B",
+					Releases: []ModRelease{
+						{
+							Version:     "1.2.0",
+							DownloadURL: "/download/mod-b",
+							FileName:    "mod-b_1.2.0.zip",
+							Sha1:        "bbb",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{},
+							},
+						},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		u := &Updater{
+			modServerURL: server.URL,
+			factVersion:  "2.0",
+			mods: map[string]*ModData{
+				"mod-a": {Name: "mod-a", Title: "mod-a", Enabled: true},
+			},
+			httpClient: server.Client(),
+		}
+
+		err := u.ResolveMetadata()
+		if err != nil {
+			t.Fatalf("ResolveMetadata() returned unexpected error: %v", err)
+		}
+
+		// mod-a should have its title resolved
+		if u.mods["mod-a"].Title != "Mod A" {
+			t.Errorf("mod-a title = %q; want %q", u.mods["mod-a"].Title, "Mod A")
+		}
+
+		// mod-b should have been discovered as a transitive dependency
+		modB, ok := u.mods["mod-b"]
+		if !ok {
+			t.Fatal("expected transitive dependency 'mod-b' to be discovered")
+		}
+		if modB.Title != "Mod B" {
+			t.Errorf("mod-b title = %q; want %q", modB.Title, "Mod B")
+		}
+		if modB.Latest == nil {
+			t.Fatal("mod-b should have a Latest release")
+		}
+		if modB.Latest.Version != "1.2.0" {
+			t.Errorf("mod-b latest version = %q; want %q", modB.Latest.Version, "1.2.0")
+		}
+	})
+
+	t.Run("handles circular dependencies without infinite loop", func(t *testing.T) {
+		// "circle-a" depends on "circle-b", "circle-b" depends on "circle-a"
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var resp ModPortalMetadata
+			switch r.URL.Path {
+			case "/api/mods/circle-a/full":
+				resp = ModPortalMetadata{
+					Title: "Circle A",
+					Releases: []ModRelease{
+						{
+							Version:  "1.0.0",
+							FileName: "circle-a_1.0.0.zip",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{"circle-b"},
+							},
+						},
+					},
+				}
+			case "/api/mods/circle-b/full":
+				resp = ModPortalMetadata{
+					Title: "Circle B",
+					Releases: []ModRelease{
+						{
+							Version:  "1.0.0",
+							FileName: "circle-b_1.0.0.zip",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{"circle-a"},
+							},
+						},
+					},
+				}
+			default:
+				http.NotFound(w, r)
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+		})
+
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		u := &Updater{
+			modServerURL: server.URL,
+			factVersion:  "2.0",
+			mods: map[string]*ModData{
+				"circle-a": {Name: "circle-a", Title: "circle-a", Enabled: true},
+			},
+			httpClient: server.Client(),
+		}
+
+		// Should complete without hanging
+		err := u.ResolveMetadata()
+		if err != nil {
+			t.Fatalf("ResolveMetadata() returned unexpected error: %v", err)
+		}
+
+		// Both should be resolved
+		if _, ok := u.mods["circle-a"]; !ok {
+			t.Error("circle-a should be in mods map")
+		}
+		if _, ok := u.mods["circle-b"]; !ok {
+			t.Error("circle-b should have been discovered")
+		}
+	})
+
+	t.Run("trims whitespace in dependency strings", func(t *testing.T) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/mods/trimmod/full":
+				resp := ModPortalMetadata{
+					Title: "Trim Mod",
+					Releases: []ModRelease{
+						{
+							Version:  "1.0.0",
+							FileName: "trimmod_1.0.0.zip",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{"  spacey-dep >= 1.0.0  "},
+							},
+						},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/api/mods/spacey-dep/full":
+				resp := ModPortalMetadata{
+					Title: "Spacey Dep",
+					Releases: []ModRelease{
+						{
+							Version:  "1.0.0",
+							FileName: "spacey-dep_1.0.0.zip",
+							InfoJSON: struct {
+								FactorioVersion string   `json:"factorio_version"`
+								Dependencies    []string `json:"dependencies"`
+							}{
+								FactorioVersion: "2.0",
+								Dependencies:    []string{},
+							},
+						},
+					},
+				}
+				_ = json.NewEncoder(w).Encode(resp)
+			default:
+				http.NotFound(w, r)
+			}
+		})
+
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		u := &Updater{
+			modServerURL: server.URL,
+			factVersion:  "2.0",
+			mods: map[string]*ModData{
+				"trimmod": {Name: "trimmod", Title: "trimmod", Enabled: true},
+			},
+			httpClient: server.Client(),
+		}
+
+		err := u.ResolveMetadata()
+		if err != nil {
+			t.Fatalf("ResolveMetadata() returned unexpected error: %v", err)
+		}
+
+		if _, ok := u.mods["spacey-dep"]; !ok {
+			t.Error("expected whitespace-padded dependency 'spacey-dep' to be discovered after TrimSpace")
 		}
 	})
 }
@@ -794,4 +1059,3 @@ func TestRetrieveModMetadata(t *testing.T) {
 		t.Error("latest release SHA-1 should not be empty")
 	}
 }
-
