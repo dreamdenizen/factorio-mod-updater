@@ -609,12 +609,12 @@ func (u *Updater) UpdateMods() (int, error) {
 			for {
 				select {
 				case <-t.C:
-					fmt.Print(".")
+					pterm.Print(".")
 					os.Stdout.Sync()
 					printed = true
 				case <-ctx.Done():
 					if printed {
-						fmt.Println() // Flush to a clean line when downloads finish
+						pterm.Println() // Flush to a clean line when downloads finish
 					}
 					return
 				}

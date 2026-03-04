@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"factorio-updater/internal/factorio"
+
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 )
@@ -41,10 +42,10 @@ func runUpdateFlow(cfg CLIConfig) error {
 			spinner.Success("Metadata fully resolved")
 		}
 	}
-	
-	fmt.Println()
+
+	pterm.Println()
 	summaryStr := printModList(updater)
-	fmt.Println()
+	pterm.Println()
 
 	if !updatesAvailable(updater) {
 		msg := "All mods are up to date."
@@ -55,7 +56,7 @@ func runUpdateFlow(cfg CLIConfig) error {
 	}
 
 	if pterm.RawOutput {
-		fmt.Println("Updating mods...")
+		pterm.Println("Updating mods...")
 	} else {
 		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
 	}
@@ -69,7 +70,7 @@ func runUpdateFlow(cfg CLIConfig) error {
 		if pterm.RawOutput {
 			totalMods := len(updater.GetMods())
 			finalMsg = fmt.Sprintf("Summary: 0 mods updated | All %d mods are up to date", totalMods)
-			fmt.Println(finalMsg)
+			pterm.Println(finalMsg)
 		} else {
 			pterm.Success.Println(finalMsg)
 		}
@@ -77,18 +78,18 @@ func runUpdateFlow(cfg CLIConfig) error {
 		if pterm.RawOutput {
 			totalMods := len(updater.GetMods())
 			finalMsg = fmt.Sprintf("Summary: %d mods updated | All %d mods are up to date", updatedCount, totalMods)
-			fmt.Println(finalMsg)
+			pterm.Println(finalMsg)
 		} else {
 			finalMsg = fmt.Sprintf("Update complete! Successfully updated %d mod(s).", updatedCount)
 			pterm.Success.Printf("%s\n", finalMsg)
 		}
 	}
-	
+
 	updater.WriteLog("%s", finalMsg)
 	if logErr := updater.SaveLog(summaryStr); logErr != nil {
 		pterm.Warning.Printf("Failed to write last-mod-update.log: %v\n", logErr)
 	}
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to complete update: %w", err)
 	}
