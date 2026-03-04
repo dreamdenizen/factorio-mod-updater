@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"factorio-updater/internal/factorio"
 
@@ -42,10 +43,25 @@ func Execute() {
 	// Disable pterm rich output and enforce RawOutput when stdout is not a terminal (e.g., AMP, CI, piped output)
 	if !term.IsTerminal(int(os.Stdout.Fd())) || os.Getenv("NO_COLOR") != "" {
 		pterm.DisableStyling()
+		pterm.DisableColor()
 		pterm.RawOutput = true
 	}
+
+	// AMP Workaround: Explicitly drain buffers and add a micro-delay so external log ingestors
+	// (like CubeCoders AMP) have time to read the final bytes before the pipe is torn down.
+	defer func() {
+		os.Stdout.Sync()
+		os.Stderr.Sync()
+		time.Sleep(100 * time.Millisecond)
+	}()
+
 	if err := rootCmd.Execute(); err != nil {
 		pterm.Error.Println(err)
+
+		// os.Exit bypasses defers, so we must manually flush here as well
+		os.Stdout.Sync()
+		os.Stderr.Sync()
+		time.Sleep(100 * time.Millisecond)
 		os.Exit(1)
 	}
 }
