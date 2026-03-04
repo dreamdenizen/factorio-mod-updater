@@ -28,10 +28,10 @@ import (
 
 // Package-level compiled regexps to avoid repeated compilation on every call.
 var (
-	versionRe  = regexp.MustCompile(`(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<sub>\d+))?`)
-	factVerRe  = regexp.MustCompile(`Version: (\d+)\.(\d+)\.\d+`)
-	modZipRe   = regexp.MustCompile(`^(.*)_(\d+\.\d+\.\d+)\.zip$`)
-	depRe      = regexp.MustCompile(`^(?:[~!?](?:\(\))? )?(?P<name>[\w -]+)(?: (?P<arg>(?:[<>]=?)|=) (?P<ver>\d+\.\d+\.\d+))?$`)
+	versionRe = regexp.MustCompile(`(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<sub>\d+))?`)
+	factVerRe = regexp.MustCompile(`Version: (\d+)\.(\d+)\.\d+`)
+	modZipRe  = regexp.MustCompile(`^(.*)_(\d+\.\d+\.\d+)\.zip$`)
+	depRe     = regexp.MustCompile(`^(?:[~!?](?:\(\))? )?(?P<name>[\w -]+)(?: (?P<arg>(?:[<>]=?)|=) (?P<ver>\d+\.\d+\.\d+))?$`)
 )
 
 // maxAPIResponseBytes caps JSON response body reads to prevent memory exhaustion
@@ -54,7 +54,7 @@ type Updater struct {
 	factVersion string
 	mods        map[string]*ModData
 	httpClient  *http.Client
-	
+
 	logBuf strings.Builder
 	logMu  sync.Mutex
 }
@@ -73,7 +73,7 @@ func (u *Updater) WriteLog(format string, args ...any) {
 // located in the root Factorio directory.
 func (u *Updater) SaveLog(cliSummary string) error {
 	logPath := filepath.Join(filepath.Dir(u.modPath), "last-mod-update.log")
-	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s", 
+	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s",
 		time.Now().Format(time.RFC3339), cliSummary, u.logBuf.String())
 	return os.WriteFile(logPath, []byte(finalLog), 0644)
 }
@@ -413,11 +413,11 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 // dependencies before executing any destructive filesystem modifications.
 func (u *Updater) ResolveMetadata() error {
 	var errs []error
-	
-	// mu protects the errs slice during concurrent metadata hydration requests, 
+
+	// mu protects the errs slice during concurrent metadata hydration requests,
 	// preventing data races.
 	var mu sync.Mutex
-	
+
 	// eg bounds concurrent HTTP fetches. Waiting on this group explicitly blocks
 	// function exit until all Goroutines complete, actively preventing memory leaks.
 	eg := new(errgroup.Group)
@@ -486,7 +486,7 @@ func (u *Updater) ResolveMetadata() error {
 		}
 		slices.Sort(newModNames)
 
-		// egDeps bounds concurrent missing dependency metadata fetches. 
+		// egDeps bounds concurrent missing dependency metadata fetches.
 		// Guaranteeing we await all Goroutines averts memory leaks on closure.
 		egDeps := new(errgroup.Group)
 		egDeps.SetLimit(10)
@@ -580,13 +580,36 @@ func (u *Updater) saveModList() error {
 func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
 	var updatedCount int32
-	
+
 	// mu provides thread-safe appends to the errs slice across parallel downloads.
 	var mu sync.Mutex
 
 	var multi *pterm.MultiPrinter
 	if !pterm.RawOutput {
 		multi, _ = pterm.DefaultMultiPrinter.Start()
+	}
+
+	// AMP Linux Keep-Alive Workaround
+	// The Linux AMP observer daemon will drop its stdout read pipe if the pre-start task
+	// goes completely silent for >10 seconds while downloading heavy mod files in headless mode.
+	// We inject a tiny heartbeat to ping the pipe and force a sync every 4 seconds.
+	var hbDone chan struct{}
+	if pterm.RawOutput {
+		hbDone = make(chan struct{})
+		go func() {
+			t := time.NewTicker(4 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-t.C:
+					fmt.Print(".")
+					os.Stdout.Sync()
+				case <-hbDone:
+					fmt.Println() // Flush to a clean line when downloads finish
+					return
+				}
+			}
+		}()
 	}
 
 	// eg bounds concurrent mod port API downloads to 5 parallel Goroutines.
@@ -604,13 +627,13 @@ func (u *Updater) UpdateMods() (int, error) {
 			}
 
 			didUpdate, err := u.downloadLatest(mod, multi)
-			
+
 			mu.Lock()
 			if err != nil {
 				errs = append(errs, fmt.Errorf("downloading %q: %w", mod, err))
 			}
 			mu.Unlock()
-			
+
 			if err != nil {
 				return nil
 			}
@@ -622,6 +645,10 @@ func (u *Updater) UpdateMods() (int, error) {
 		})
 	}
 	_ = eg.Wait()
+
+	if hbDone != nil {
+		close(hbDone)
+	}
 
 	if multi != nil {
 		_, _ = multi.Stop()
@@ -650,7 +677,7 @@ func (u *Updater) UpdateMods() (int, error) {
 func (u *Updater) pruneOld(mod string) error {
 	data := u.mods[mod]
 	latestVersion := data.Latest.Version
-	
+
 	// Sanitize against directory traversal payloads
 	safeFileName := filepath.Base(filepath.Clean(data.Latest.FileName))
 	latestPath := filepath.Join(u.modPath, safeFileName)
