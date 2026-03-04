@@ -52,7 +52,7 @@ func Execute() {
 	defer func() {
 		os.Stdout.Sync()
 		os.Stderr.Sync()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}()
 
 	if err := rootCmd.Execute(); err != nil {
@@ -61,7 +61,7 @@ func Execute() {
 		// os.Exit bypasses defers, so we must manually flush here as well
 		os.Stdout.Sync()
 		os.Stderr.Sync()
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 		os.Exit(1)
 	}
 }
