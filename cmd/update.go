@@ -46,7 +46,7 @@ func runUpdateFlow(cfg CLIConfig) error {
 	if pterm.RawOutput {
 		pterm.Print("Updating mods...")
 	} else {
-		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, core) are ignored.")
+		pterm.Info.Println("Built-in Space Age expansions (space-age, quality, elevated-rails, recycler, core) are ignored.")
 	}
 
 	updatedCount, err := updater.UpdateMods()

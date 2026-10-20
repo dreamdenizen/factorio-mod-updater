@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-
 func TestResolvePaths(t *testing.T) {
 	t.Run("no args and no flags returns error", func(t *testing.T) {
 		cfg := CLIConfig{}
