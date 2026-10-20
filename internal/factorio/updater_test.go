@@ -91,6 +91,7 @@ func TestIsBuiltInMod(t *testing.T) {
 		{"space-age is built-in", "space-age", true},
 		{"quality is built-in", "quality", true},
 		{"elevated-rails is built-in", "elevated-rails", true},
+		{"recycler is built-in", "recycler", true},
 		{"random mod is not built-in", "helmod", false},
 		{"empty string is not built-in", "", false},
 		{"case sensitive check", "Base", false},
@@ -117,6 +118,7 @@ func TestParseModList(t *testing.T) {
 			{"name": "base", "enabled": true},
 			{"name": "space-age", "enabled": true},
 			{"name": "quality", "enabled": true},
+			{"name": "recycler", "enabled": true},
 			{"name": "helmod", "enabled": true},
 			{"name": "jetpack", "enabled": false},
 			{"name": "not-installed-mod", "enabled": true},
@@ -139,7 +141,7 @@ func TestParseModList(t *testing.T) {
 	}
 
 	// Built-in mods should be excluded
-	for _, builtin := range []string{"base", "space-age", "quality"} {
+	for _, builtin := range []string{"base", "space-age", "quality", "recycler"} {
 		if _, ok := u.mods[builtin]; ok {
 			t.Errorf("built-in mod %q should have been excluded from mods map", builtin)
 		}
@@ -984,7 +986,7 @@ func TestNewUpdater(t *testing.T) {
 	}
 
 	// Built-in mods should be excluded
-	for _, builtin := range []string{"base", "core", "space-age", "quality", "elevated-rails"} {
+	for _, builtin := range []string{"base", "core", "space-age", "quality", "elevated-rails", "recycler"} {
 		if _, ok := updater.mods[builtin]; ok {
 			t.Errorf("built-in mod %q should have been excluded", builtin)
 		}
