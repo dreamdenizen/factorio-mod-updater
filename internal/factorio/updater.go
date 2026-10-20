@@ -917,7 +917,7 @@ func (wc *writeCounter) Write(p []byte) (int, error) {
 // Factorio core distribution, which should not be queried on the mod portal.
 func isBuiltInMod(name string) bool {
 	switch name {
-	case "base", "core", "space-age", "quality", "elevated-rails":
+	case "base", "core", "space-age", "quality", "elevated-rails", "recycler":
 		return true
 	default:
 		return false

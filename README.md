@@ -10,7 +10,7 @@ A fast and simple tool for updating mods on your Factorio dedicated server. You 
 *   **Smart auto-detection:** Just point it at your Factorio folder and it finds everything it needs (mods, settings) all on its own.
 *   **Handles dependencies:** If a mod needs another mod to work, the updater automatically finds and installs it for you.
 *   **Safe downloads:** Checks every downloaded file to make sure it isn't corrupted, preventing broken `.zip` files from crashing your server.
-*   **Space Age aware:** Built-in DLC expansions (`space-age`, `quality`, `elevated-rails`) are safely ignored.
+*   **Space Age aware:** Built-in DLC expansions (`space-age`, `quality`, `elevated-rails`, `recycler`) are safely ignored.
 *   **Beautiful terminal:** Enjoy a clean output with spinners, colors, and live progress bars as your mods download.
 *   **Server panel friendly:** Works perfectly with server panels like Pterodactyl, Pelican Panel, or CubeCoders AMP. It automatically disables fancy colors and progress bars to keep your server logs clean and readable.
 *   **Detailed log file:** Keeps a permanent record of everything it did (like what got updated or removed) in a handy `last-mod-update.log` file, just in case you need to check what happened.
