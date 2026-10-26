@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pterm/pterm"
 )
 
 func TestVersionMatch(t *testing.T) {
@@ -39,9 +43,32 @@ func TestVersionMatch(t *testing.T) {
 			expected:  false,
 		},
 		{
-			name:      "mismatch full",
+			// Compatibility is decided on the major.minor branch; a patch
+			// component declared by a mod is informational.
+			name:      "patch component is ignored",
 			installed: "2.0.1",
 			mod:       "2.0.2",
+			expected:  true,
+		},
+		{
+			// Regression: determineVersion only ever yields major.minor, so
+			// comparing a three-component factorio_version as a string
+			// rejected every mod that declared one.
+			name:      "three component mod version on major minor install",
+			installed: "2.0",
+			mod:       "2.0.0",
+			expected:  true,
+		},
+		{
+			name:      "three component mod version with high patch",
+			installed: "2.0",
+			mod:       "2.0.55",
+			expected:  true,
+		},
+		{
+			name:      "three component mod version on wrong branch",
+			installed: "2.0",
+			mod:       "1.1.0",
 			expected:  false,
 		},
 		{
@@ -544,7 +571,7 @@ func TestPruneOld(t *testing.T) {
 			},
 		}
 
-		if err := u.pruneOld("helmod"); err != nil {
+		if err := u.pruneOld(u.mods["helmod"]); err != nil {
 			t.Fatalf("pruneOld() returned unexpected error: %v", err)
 		}
 
@@ -589,7 +616,7 @@ func TestPruneOld(t *testing.T) {
 			},
 		}
 
-		err := u.pruneOld("helmod")
+		err := u.pruneOld(u.mods["helmod"])
 		if err == nil {
 			t.Fatal("pruneOld() should return error for empty FileName")
 		}
@@ -1059,5 +1086,536 @@ func TestRetrieveModMetadata(t *testing.T) {
 	}
 	if mod.Latest.Sha1 == "" {
 		t.Error("latest release SHA-1 should not be empty")
+	}
+}
+
+// TestRedactSecrets verifies that credentials are stripped from error text in
+// both their raw and URL-encoded forms.
+func TestRedactSecrets(t *testing.T) {
+	t.Run("nil error stays nil", func(t *testing.T) {
+		if got := redactSecrets(nil, "tok"); got != nil {
+			t.Errorf("redactSecrets(nil) = %v; want nil", got)
+		}
+	})
+
+	t.Run("empty secrets are ignored", func(t *testing.T) {
+		err := redactSecrets(fmt.Errorf("boom"), "", "")
+		if err.Error() != "boom" {
+			t.Errorf("message = %q; want %q", err.Error(), "boom")
+		}
+	})
+
+	t.Run("raw and encoded forms are both replaced", func(t *testing.T) {
+		secret := "a b+c"
+		err := redactSecrets(fmt.Errorf("url=%s encoded=%s", secret, "a+b%2Bc"), secret)
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("raw secret survived redaction: %q", err.Error())
+		}
+	})
+
+	t.Run("original error remains unwrappable", func(t *testing.T) {
+		base := fmt.Errorf("token=hunter2")
+		wrapped := redactSecrets(base, "hunter2")
+		if !errors.Is(wrapped, base) {
+			t.Error("errors.Is could not reach the original error")
+		}
+	})
+}
+
+// TestDownloadLatestRedactsCredentials is the regression test for the
+// credential leak: Go's *url.Error embeds the full query string, so a transport
+// failure must not surface the factorio.com username or token.
+func TestDownloadLatestRedactsCredentials(t *testing.T) {
+	const (
+		token = "SUPERSECRETTOKEN99"
+		user  = "secret-operator"
+	)
+
+	u := &Updater{
+		// Port 1 is reserved and closed, forcing a dial error that carries the URL.
+		modServerURL: "http://127.0.0.1:1",
+		modPath:      t.TempDir(),
+		username:     user,
+		token:        token,
+		mods:         make(map[string]*ModData),
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+	}
+	u.mods["helmod"] = &ModData{
+		Name:  "helmod",
+		Title: "Helmod",
+		Latest: &ModRelease{
+			DownloadURL: "/download/helmod/deadbeef",
+			FileName:    "helmod_1.0.0.zip",
+			Version:     "1.0.0",
+			Sha1:        "0000000000000000000000000000000000000000",
+		},
+	}
+
+	_, err := u.downloadLatest(u.mods["helmod"], nil)
+	if err == nil {
+		t.Fatal("expected a transport error against a closed port")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("token leaked into error text: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), user) {
+		t.Errorf("username leaked into error text: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("expected a redaction marker, got: %q", err.Error())
+	}
+}
+
+// TestSaveModListPreservesExistingEntries is the regression test for the
+// mod-list.json erasure bug. Built-in and DLC mods are deliberately excluded
+// from the tracking map so they are never downloaded, but they must still
+// survive a rewrite: Factorio treats a mod with no entry as enabled, so losing
+// `"space-age": false` silently re-enables the DLC.
+func TestSaveModListPreservesExistingEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	original := `{
+  "mods": [
+    {"name": "base", "enabled": true},
+    {"name": "space-age", "enabled": false},
+    {"name": "quality", "enabled": false},
+    {"name": "elevated-rails", "enabled": false},
+    {"name": "helmod", "enabled": true, "version": "2.2.12"},
+    {"name": "a-local-only-mod", "enabled": false}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(original), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+
+	// The tracking map mirrors reality: built-ins filtered out by parseModList,
+	// plus one dependency newly discovered during resolution.
+	u := &Updater{
+		modPath: tmpDir,
+		mods: map[string]*ModData{
+			"helmod": {Name: "helmod", Enabled: true},
+			"flib":   {Name: "flib", Enabled: true},
+		},
+	}
+
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("saveModList() returned unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading written mod-list.json: %v", err)
+	}
+
+	var result struct {
+		Mods []map[string]any `json:"mods"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("parsing written mod-list.json: %v", err)
+	}
+
+	got := make(map[string]map[string]any, len(result.Mods))
+	for _, m := range result.Mods {
+		name, _ := m["name"].(string)
+		got[name] = m
+	}
+
+	// Nothing may be deleted, and disabled DLC must stay disabled.
+	for _, name := range []string{"base", "space-age", "quality", "elevated-rails", "helmod", "a-local-only-mod"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("entry %q was deleted from mod-list.json", name)
+		}
+	}
+	for _, name := range []string{"space-age", "quality", "elevated-rails", "a-local-only-mod"} {
+		if entry, ok := got[name]; ok {
+			if enabled, _ := entry["enabled"].(bool); enabled {
+				t.Errorf("%q was silently re-enabled (enabled=true); want false", name)
+			}
+		}
+	}
+
+	// Fields this tool does not model must survive untouched.
+	if v, _ := got["helmod"]["version"].(string); v != "2.2.12" {
+		t.Errorf(`helmod lost its unmodelled "version" field: got %q, want "2.2.12"`, v)
+	}
+
+	// Newly discovered dependencies are appended.
+	if entry, ok := got["flib"]; !ok {
+		t.Error("newly discovered dependency 'flib' was not added to mod-list.json")
+	} else if enabled, _ := entry["enabled"].(bool); !enabled {
+		t.Error("newly added 'flib' should be enabled")
+	}
+
+	if len(result.Mods) != 7 {
+		t.Errorf("expected 7 entries (6 original + flib), got %d", len(result.Mods))
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0", "1.0.0", 0},
+		{"2.1", "2.1.0", 0},
+		{"2.0.16", "2.2.0", -1},
+		{"2.2.1", "2.0.17", 1},
+		{"2.10.0", "2.9.0", 1},  // lexical comparison would get this backwards
+		{"2.9.0", "2.10.0", -1}, // and this one too
+		{"1.0.0", "1.0.1", -1},
+		{"0.18.47", "1.1.0", -1},
+		{"", "0.0.0", 0},
+		{"garbage", "0", 0},
+	}
+	for _, tt := range tests {
+		if got := compareVersions(tt.a, tt.b); got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d; want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// TestRetrieveModMetadataSelectsHighestVersion is the regression test for
+// release selection. The Mod Portal orders releases by publish time, not by
+// version, so an author backporting to an older branch leaves a lower version
+// as the last element. This mirrors helmod's real publish order.
+func TestRetrieveModMetadataSelectsHighestVersion(t *testing.T) {
+	body := `{
+	  "title": "Helmod",
+	  "deprecated": false,
+	  "releases": [
+	    {"version": "2.2.0",  "file_name": "helmod_2.2.0.zip",  "sha1": "a", "info_json": {"factorio_version": "2.0"}},
+	    {"version": "2.2.1",  "file_name": "helmod_2.2.1.zip",  "sha1": "b", "info_json": {"factorio_version": "2.0"}},
+	    {"version": "1.1.9",  "file_name": "helmod_1.1.9.zip",  "sha1": "c", "info_json": {"factorio_version": "1.1"}},
+	    {"version": "2.0.16", "file_name": "helmod_2.0.16.zip", "sha1": "d", "info_json": {"factorio_version": "2.0"}}
+	  ]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	u := &Updater{
+		modServerURL: srv.URL,
+		factVersion:  "2.0",
+		mods:         map[string]*ModData{"helmod": {Name: "helmod"}},
+		httpClient:   srv.Client(),
+	}
+
+	if err := u.RetrieveModMetadata("helmod"); err != nil {
+		t.Fatalf("RetrieveModMetadata() returned unexpected error: %v", err)
+	}
+
+	latest := u.mods["helmod"].Latest
+	if latest == nil {
+		t.Fatal("no compatible release was selected")
+	}
+	if latest.Version != "2.2.1" {
+		t.Errorf("selected version %q; want 2.2.1 (the highest compatible, not the last listed)", latest.Version)
+	}
+}
+
+// TestDownloadLatestNeverDowngrades verifies the monotonicity guard: when the
+// installed release is newer than the latest compatible one, nothing is
+// fetched and nothing is reported as updated.
+func TestDownloadLatestNeverDowngrades(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	u := &Updater{
+		// Any network attempt against a closed port would surface as an error.
+		modServerURL: "http://127.0.0.1:1",
+		modPath:      tmpDir,
+		username:     "u",
+		token:        "t",
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+		mods: map[string]*ModData{
+			"helmod": {
+				Name:      "helmod",
+				Title:     "Helmod",
+				Installed: true,
+				Version:   "2.2.1",
+				Latest: &ModRelease{
+					Version:     "2.0.16",
+					FileName:    "helmod_2.0.16.zip",
+					DownloadURL: "/download/helmod/old",
+					Sha1:        "0000000000000000000000000000000000000000",
+				},
+			},
+		},
+	}
+
+	updated, err := u.downloadLatest(u.mods["helmod"], nil)
+	if err != nil {
+		t.Fatalf("expected no error and no network attempt, got: %v", err)
+	}
+	if updated {
+		t.Error("reported an update while moving from 2.2.1 down to 2.0.16")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.0.16.zip")); err == nil {
+		t.Error("the older release was downloaded despite being a downgrade")
+	}
+}
+
+// TestParseModListPrefersHighestInstalledVersion covers several zips of the
+// same mod sitting side by side; the highest version is the live one, which
+// directory order does not reliably give.
+func TestParseModListPrefersHighestInstalledVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(`{"mods":[{"name":"helmod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+	for _, v := range []string{"2.10.0", "2.9.0", "2.2.1"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("helmod_%s.zip", v)), []byte("x"), 0600); err != nil {
+			t.Fatalf("seeding zip: %v", err)
+		}
+	}
+
+	u := &Updater{modPath: tmpDir, mods: make(map[string]*ModData)}
+	if err := u.parseModList(); err != nil {
+		t.Fatalf("parseModList() returned unexpected error: %v", err)
+	}
+
+	if got := u.mods["helmod"].Version; got != "2.10.0" {
+		t.Errorf("installed version = %q; want 2.10.0 (highest on disk)", got)
+	}
+}
+
+// TestDetermineVersionPrefersBaseInfoJSON verifies that the Factorio version
+// is read from the bundled base mod rather than by executing the binary, so a
+// missing, non-executable or slow executable cannot abort the run.
+func TestDetermineVersionPrefersBaseInfoJSON(t *testing.T) {
+	root := t.TempDir()
+	baseDir := filepath.Join(root, "data", "base")
+	if err := os.MkdirAll(baseDir, 0750); err != nil {
+		t.Fatalf("creating base mod dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "info.json"),
+		[]byte(`{"name":"base","version":"2.0.55","title":"Base Mod"}`), 0600); err != nil {
+		t.Fatalf("seeding info.json: %v", err)
+	}
+
+	u := &Updater{
+		modPath: filepath.Join(root, "mods"),
+		// Deliberately bogus: it must never be executed.
+		factPath: filepath.Join(root, "bin", "x64", "does-not-exist"),
+	}
+
+	if err := u.determineVersion(); err != nil {
+		t.Fatalf("determineVersion() returned unexpected error: %v", err)
+	}
+	if u.factVersion != "2.0" {
+		t.Errorf("factVersion = %q; want 2.0", u.factVersion)
+	}
+}
+
+// TestDetermineVersionErrorsClearlyWithoutBinaryOrInfoJSON checks the guidance
+// given when neither source is available.
+func TestDetermineVersionErrorsClearlyWithoutBinaryOrInfoJSON(t *testing.T) {
+	u := &Updater{modPath: filepath.Join(t.TempDir(), "mods")}
+
+	err := u.determineVersion()
+	if err == nil {
+		t.Fatal("expected an error when neither info.json nor a binary is available")
+	}
+	if !strings.Contains(err.Error(), "--bin-path") {
+		t.Errorf("error should point at --bin-path, got: %v", err)
+	}
+}
+
+// TestUpdateModsSkipsIncompatibleWithoutFailing is the regression test for the
+// exit code. A mod with no release for the installed Factorio branch is an
+// ordinary state, not a failure: returning an error here propagated to
+// os.Exit(1), which can abort a server panel's pre-start hook over one lagging
+// mod, contradicting the documented promise that the server still starts.
+func TestUpdateModsSkipsIncompatibleWithoutFailing(t *testing.T) {
+	pterm.RawOutput = true
+	t.Cleanup(func() { pterm.RawOutput = false })
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"),
+		[]byte(`{"mods":[{"name":"abandoned-mod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+
+	u := &Updater{
+		modPath:     tmpDir,
+		factVersion: "2.0",
+		mods: map[string]*ModData{
+			// Delisted or not yet updated: metadata resolved, no compatible release.
+			"abandoned-mod": {Name: "abandoned-mod", Title: "Abandoned Mod", Enabled: true, Latest: nil},
+		},
+	}
+
+	updated, err := u.UpdateMods()
+	if err != nil {
+		t.Fatalf("a mod with no compatible release must not fail the run, got: %v", err)
+	}
+	if updated != 0 {
+		t.Errorf("updated count = %d; want 0", updated)
+	}
+	if !strings.Contains(u.logBuf.String(), "abandoned-mod") {
+		t.Error("the skipped mod should still be recorded in the log")
+	}
+}
+
+// TestResolveMetadataInstallsOnlyRequiredDependencies pins which Factorio
+// dependency prefixes oblige an install. "+" (recommended) was previously
+// skipped only because it failed to match the dependency regex, with nothing
+// recording that as the intent.
+func TestResolveMetadataInstallsOnlyRequiredDependencies(t *testing.T) {
+	release := func(deps string) string {
+		return fmt.Sprintf(`{"title":"T","deprecated":false,"releases":[
+			{"version":"1.0.0","file_name":"m_1.0.0.zip","sha1":"a",
+			 "info_json":{"factorio_version":"2.0","dependencies":[%s]}}]}`, deps)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/root-mod/") {
+			_, _ = w.Write([]byte(release(`"required-dep", "~ load-order-dep", "+ recommended-dep", "? optional-dep", "! incompatible-dep", "(?) hidden-dep", "base >= 2.0"`)))
+			return
+		}
+		_, _ = w.Write([]byte(release("")))
+	}))
+	defer srv.Close()
+
+	u := &Updater{
+		modServerURL: srv.URL,
+		factVersion:  "2.0",
+		mods:         map[string]*ModData{"root-mod": {Name: "root-mod"}},
+		httpClient:   srv.Client(),
+	}
+
+	if err := u.ResolveMetadata(); err != nil {
+		t.Fatalf("ResolveMetadata() returned unexpected error: %v", err)
+	}
+
+	for _, want := range []string{"required-dep", "load-order-dep"} {
+		if _, ok := u.mods[want]; !ok {
+			t.Errorf("required dependency %q was not resolved", want)
+		}
+	}
+	for _, unwanted := range []string{"recommended-dep", "optional-dep", "incompatible-dep", "hidden-dep", "base"} {
+		if _, ok := u.mods[unwanted]; ok {
+			t.Errorf("dependency %q should not have been installed", unwanted)
+		}
+	}
+}
+
+// TestSaveModListSkipsUnchangedFile verifies that a run which changes nothing
+// leaves no backup behind. Backups were previously written on every single
+// invocation, so a nightly cron accumulated one file per run in the directory
+// Factorio and server panels scan.
+func TestSaveModListSkipsUnchangedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	u := &Updater{
+		modPath: tmpDir,
+		mods:    map[string]*ModData{"helmod": {Name: "helmod", Enabled: true}},
+	}
+
+	// First save establishes the file and is expected to back up nothing,
+	// since there was no previous file.
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("first saveModList() failed: %v", err)
+	}
+	first, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading mod-list.json: %v", err)
+	}
+
+	// Second save changes nothing, so it must not rewrite or back up.
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("second saveModList() failed: %v", err)
+	}
+
+	second, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading mod-list.json: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Error("an unchanged save rewrote the file")
+	}
+
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		if modListBackupRe.MatchString(e.Name()) {
+			t.Errorf("an unchanged save created a backup: %s", e.Name())
+		}
+	}
+}
+
+// TestSaveModListPrunesOldBackups checks that backups are capped and that
+// nothing else in the mods directory is touched.
+func TestSaveModListPrunesOldBackups(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"),
+		[]byte(`{"mods":[{"name":"helmod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+	for _, day := range []string{"01", "02", "03", "04", "05"} {
+		name := fmt.Sprintf("mod-list.2026-01-%s_1200.00.json", day)
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(`{"mods":[]}`), 0600); err != nil {
+			t.Fatalf("seeding backup: %v", err)
+		}
+	}
+	// Lookalikes that must survive: neither matches the backup pattern.
+	for _, name := range []string{"mod-list-custom.json", "mod-settings.dat"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("keep me"), 0600); err != nil {
+			t.Fatalf("seeding bystander: %v", err)
+		}
+	}
+
+	u := &Updater{
+		modPath: tmpDir,
+		mods: map[string]*ModData{
+			"helmod": {Name: "helmod", Enabled: true},
+			"flib":   {Name: "flib", Enabled: true}, // forces a real change
+		},
+	}
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("saveModList() failed: %v", err)
+	}
+
+	entries, _ := os.ReadDir(tmpDir)
+	backups := 0
+	for _, e := range entries {
+		if modListBackupRe.MatchString(e.Name()) {
+			backups++
+		}
+	}
+	if backups != keepModListBackups {
+		t.Errorf("kept %d backups; want %d", backups, keepModListBackups)
+	}
+
+	for _, name := range []string{"mod-list-custom.json", "mod-settings.dat"} {
+		if _, err := os.Stat(filepath.Join(tmpDir, name)); err != nil {
+			t.Errorf("unrelated file %q was deleted by backup pruning", name)
+		}
+	}
+}
+
+// TestSaveLogIgnoresTrailingSlash pins the log location: filepath.Dir on a
+// path with a trailing separator is a no-op, which dropped the log inside the
+// mods directory instead of beside it.
+func TestSaveLogIgnoresTrailingSlash(t *testing.T) {
+	root := t.TempDir()
+	modDir := filepath.Join(root, "mods")
+	if err := os.MkdirAll(modDir, 0750); err != nil {
+		t.Fatalf("creating mods dir: %v", err)
+	}
+
+	for _, modPath := range []string{modDir, modDir + string(filepath.Separator)} {
+		u := &Updater{modPath: modPath}
+		if err := u.SaveLog("summary"); err != nil {
+			t.Fatalf("SaveLog(%q) failed: %v", modPath, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "last-mod-update.log")); err != nil {
+			t.Errorf("modPath %q: log not written beside the mods directory: %v", modPath, err)
+		}
+		if _, err := os.Stat(filepath.Join(modDir, "last-mod-update.log")); err == nil {
+			t.Errorf("modPath %q: log was written inside the mods directory", modPath)
+		}
 	}
 }

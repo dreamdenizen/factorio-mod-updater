@@ -39,6 +39,14 @@ You can then move it somewhere on your PATH if you would like to run it from any
 sudo mv mod_updater /usr/local/bin/
 ```
 
+### Install with Go
+
+If you already have Go 1.26+ installed, you can skip the download entirely:
+
+```bash
+go install github.com/dreamdenizen/factorio-mod-updater@latest
+```
+
 ## Usage
 
 The simplest way to use the updater is to just point it at your Factorio installation folder. By default, it will check for updates, show you what's old, and automatically download the upgrades.
@@ -57,7 +65,7 @@ All paths can be explicitly overridden if you have a custom or unusual server se
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--bin-path` | `-b` | Path to your Factorio executable |
+| `--bin-path` | `-b` | Path to your Factorio executable (optional, see note below) |
 | `--mod-path` | `-m` | Path to your mods directory |
 | `--server-settings` | `-s` | Path to your `server-settings.json` |
 | `--player-data` | `-d` | Path to your `player-data.json` |
@@ -68,6 +76,8 @@ All paths can be explicitly overridden if you have a custom or unusual server se
 # Example with explicit, custom paths
 ./mod_updater --bin-path ~/factorio/bin/x64/factorio -m ~/factorio/mods -s ~/factorio/data/server-settings.json
 ```
+
+*(Note on `--bin-path`: the updater reads your Factorio version from `data/base/info.json`, which ships with the game, so it usually doesn't need the executable at all. You only need `--bin-path` if that file isn't sitting next to your mods directory — for example if your mods live somewhere unusual. `--mod-path` on its own is enough for most custom setups.)*
 
 ### Authentication
 

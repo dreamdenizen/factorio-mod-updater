@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"time"
 
-	"factorio-updater/internal/factorio"
+	"github.com/dreamdenizen/factorio-mod-updater/internal/factorio"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -113,8 +113,11 @@ func resolvePaths(cfg CLIConfig) (resolvedFactPath, resolvedModPath string, err 
 		}
 	}
 
-	if fp == "" || mp == "" {
-		return "", "", fmt.Errorf("must specify either a ROOT_DIR positional argument, or both --bin-path and --mod-path")
+	// Only the mods directory is required. The Factorio version is read from
+	// the bundled base mod's info.json where it can be found, so --bin-path is
+	// needed only for layouts where that file is not beside the mods directory.
+	if mp == "" {
+		return "", "", fmt.Errorf("must specify either a ROOT_DIR positional argument, or --mod-path")
 	}
 
 	return fp, mp, nil

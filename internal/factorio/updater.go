@@ -1,6 +1,7 @@
 package factorio
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha1" // #nosec G505 - SHA-1 is mandated by the Factorio Mod Portal API for download validation.
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,11 +35,22 @@ var (
 	factVerRe = regexp.MustCompile(`Version: (\d+)\.(\d+)\.\d+`)
 	modZipRe  = regexp.MustCompile(`^(.*)_(\d+\.\d+\.\d+)\.zip$`)
 	depRe     = regexp.MustCompile(`^(?:[~!?](?:\(\))? )?(?P<name>[\w -]+)(?: (?P<arg>(?:[<>]=?)|=) (?P<ver>\d+\.\d+\.\d+))?$`)
+
+	// modListBackupRe matches only backups this tool wrote, so nothing else
+	// in the mods directory is ever considered for deletion.
+	modListBackupRe = regexp.MustCompile(`^mod-list\.\d{4}-\d{2}-\d{2}_\d{4}\.\d{2}\.json$`)
 )
 
 // maxAPIResponseBytes caps JSON response body reads to prevent memory exhaustion
 // from malicious or malformed API responses.
 const maxAPIResponseBytes = 10 * 1024 * 1024 // 10 MB
+
+// modListBackupStamp is the timestamp layout used for mod-list.json backups.
+// It is chosen so that the resulting filenames sort chronologically as text.
+const modListBackupStamp = "2006-01-02_1504.05"
+
+// keepModListBackups caps how many timestamped mod-list.json backups are kept.
+const keepModListBackups = 3
 
 // Updater orchestrates the lifecycle of Factorio mod management, including
 // authentication, version detection, metadata resolution, and download execution.
@@ -74,7 +87,9 @@ func (u *Updater) WriteLog(format string, args ...any) {
 // SaveLog dumps the accumulated detailed activity trace buffer to last-mod-update.log
 // located in the root Factorio directory.
 func (u *Updater) SaveLog(cliSummary string) error {
-	logPath := filepath.Join(filepath.Dir(u.modPath), "last-mod-update.log")
+	// Clean first: filepath.Dir("/srv/factorio/mods/") is the mods directory
+	// itself, which would drop the log inside the directory Factorio scans.
+	logPath := filepath.Join(filepath.Dir(filepath.Clean(u.modPath)), "last-mod-update.log")
 	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s",
 		time.Now().Format(time.RFC3339), cliSummary, u.logBuf.String())
 	return os.WriteFile(logPath, []byte(finalLog), 0600)
@@ -263,11 +278,66 @@ func (u *Updater) parseTokens() error {
 	return nil
 }
 
-// determineVersion executes the Factorio binary with --version and parses
-// the major.minor version string from its output.
-// Why: Context timeout prevents the application from hanging indefinitely if
-// the local factorio executable is artificially slow or blocking.
+// baseInfoCandidates lists the places the bundled base mod's info.json may sit,
+// derived from the mods directory and from the executable path.
+func (u *Updater) baseInfoCandidates() []string {
+	var out []string
+	if u.modPath != "" {
+		root := filepath.Dir(filepath.Clean(u.modPath))
+		out = append(out, filepath.Join(root, "data", "base", "info.json"))
+	}
+	if u.factPath != "" {
+		// <root>/bin/x64/factorio -> <root>
+		root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(u.factPath))))
+		out = append(out, filepath.Join(root, "data", "base", "info.json"))
+	}
+	return slices.Compact(out)
+}
+
+// baseInfoVersion reads the first readable base mod info.json from the given
+// paths and returns the major.minor Factorio version it declares.
+func baseInfoVersion(paths ...string) (string, bool) {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var info struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &info); err != nil {
+			continue
+		}
+		if m := versionRe.FindStringSubmatch(info.Version); len(m) > 2 {
+			return fmt.Sprintf("%s.%s", m[1], m[2]), true
+		}
+	}
+	return "", false
+}
+
+// determineVersion resolves the installed Factorio major.minor version,
+// preferring the bundled base mod's info.json and falling back to executing
+// the binary with --version.
+// Why: The base mod ships with the game and declares the same version the
+// binary reports, so reading it needs no execute permission, cannot hang, and
+// works where the executable lives outside the server directory. Executing the
+// binary remains as a fallback for unusual layouts, with a context timeout so
+// a slow or blocking executable cannot stall the run indefinitely.
 func (u *Updater) determineVersion() error {
+	candidates := u.baseInfoCandidates()
+	if version, ok := baseInfoVersion(candidates...); ok {
+		u.factVersion = version
+		return nil
+	}
+
+	if u.factPath == "" {
+		return fmt.Errorf("could not read the factorio version from %s; pass --bin-path to query the binary instead",
+			strings.Join(candidates, " or "))
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -331,8 +401,11 @@ func (u *Updater) parseModList() error {
 					name := match[1]
 					version := match[2]
 					if m, ok := u.mods[name]; ok {
-						m.Installed = true
-						m.Version = version
+						// Several versions may sit side by side; the highest is live.
+						if !m.Installed || compareVersions(version, m.Version) > 0 {
+							m.Installed = true
+							m.Version = version
+						}
 					} else {
 						u.mods[name] = &ModData{
 							Name:      name,
@@ -364,11 +437,36 @@ func versionMatch(installed, mod string) bool {
 		return true
 	}
 
-	if len(modMatch) > 3 && modMatch[3] != "" && len(instMatch) > 3 {
-		return mod == installed
-	}
-
+	// Compatibility is a property of the major.minor branch. Where a mod
+	// declares a third component it is informational, so it is ignored: the
+	// detected Factorio version is only ever major.minor, and comparing
+	// "2.0.0" against "2.0" as strings rejected every such mod outright.
 	return modMatch[1] == instMatch[1] && modMatch[2] == instMatch[2]
+}
+
+// compareVersions compares two dotted numeric version strings component by
+// component, returning -1, 0 or 1. Absent components count as zero, so "2.1"
+// and "2.1.0" are equal, and non-numeric components degrade to zero rather
+// than erroring.
+// Why: Mod Portal releases are ordered by publish time, not by version, so the
+// latest release can only be identified by comparing versions numerically.
+// String comparison is unsound here ("2.9.0" > "2.10.0" lexically).
+func compareVersions(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := range max(len(as), len(bs)) {
+		var ai, bi int
+		if i < len(as) {
+			ai, _ = strconv.Atoi(strings.TrimSpace(as[i]))
+		}
+		if i < len(bs) {
+			bi, _ = strconv.Atoi(strings.TrimSpace(bs[i]))
+		}
+		if ai != bi {
+			return cmp.Compare(ai, bi)
+		}
+	}
+	return 0
 }
 
 // RetrieveModMetadata queries the Factorio Mod Portal API for a specific mod,
@@ -414,10 +512,16 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 	m.Title = meta.Title
 	m.Deprecated = meta.Deprecated
 
+	// The API returns releases ordered by publish time, not by version, so an
+	// author backporting to an older branch leaves a lower version last. Select
+	// the highest compatible version explicitly.
 	var latest *ModRelease
 	for i := range meta.Releases {
 		rel := &meta.Releases[i]
-		if versionMatch(u.factVersion, rel.InfoJSON.FactorioVersion) {
+		if !versionMatch(u.factVersion, rel.InfoJSON.FactorioVersion) {
+			continue
+		}
+		if latest == nil || compareVersions(rel.Version, latest.Version) > 0 {
 			latest = rel
 		}
 	}
@@ -477,8 +581,16 @@ func (u *Updater) ResolveMetadata() error {
 
 			for _, depStr := range data.Latest.InfoJSON.Dependencies {
 				depStr = strings.TrimSpace(depStr)
-				// Skip optional (?) and incompatible (!) dependencies
-				if strings.HasPrefix(depStr, "!") || strings.HasPrefix(depStr, "?") || strings.HasPrefix(depStr, "(?)") {
+				// Factorio dependency prefixes are "!" incompatible, "?"
+				// optional, "(?)" hidden optional, "+" recommended, "~"
+				// required but not affecting load order, and no prefix for a
+				// plain requirement. Only the last two oblige us to install
+				// anything; "+" in particular is a suggestion, and installing
+				// suggestions would add mods the operator never asked for.
+				if strings.HasPrefix(depStr, "!") ||
+					strings.HasPrefix(depStr, "?") ||
+					strings.HasPrefix(depStr, "(?)") ||
+					strings.HasPrefix(depStr, "+") {
 					continue
 				}
 
@@ -557,42 +669,111 @@ func (u *Updater) GetMods() []*ModData {
 	return list
 }
 
-// saveModList writes the current mod tracking state back to mod-list.json,
-// creating a timestamped backup of the previous version first.
+// modListEntryName extracts the "name" field from a raw mod-list.json entry,
+// returning "" when the entry is not an object with a usable name.
+func modListEntryName(raw json.RawMessage) string {
+	var e struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return ""
+	}
+	return e.Name
+}
+
+// saveModList merges newly tracked mods into the existing mod-list.json,
+// preserving every entry already in the file, and creating a timestamped
+// backup of the previous version first.
+// Why: The tracking map deliberately omits built-in and DLC mods (base,
+// space-age, quality, elevated-rails, recycler) so they are never fetched from
+// the portal. Regenerating the file from that map therefore deleted their
+// entries, and Factorio treats a mod with no entry as ENABLED -- silently
+// switching a deliberately disabled DLC back on and changing the prototype set
+// of an existing save. Entries are now preserved verbatim, including fields
+// this tool does not model, and only genuinely new mods are appended.
 func (u *Updater) saveModList() error {
-	type modEntry struct {
+	modListPath := filepath.Join(u.modPath, "mod-list.json")
+
+	root := map[string]json.RawMessage{}
+	var entries []json.RawMessage
+	existing := make(map[string]bool)
+
+	var originalRaw []byte
+
+	switch data, err := os.ReadFile(modListPath); {
+	case err == nil:
+		originalRaw = data
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("parsing existing mod-list.json: %w", err)
+		}
+		if rawMods, ok := root["mods"]; ok {
+			if err := json.Unmarshal(rawMods, &entries); err != nil {
+				return fmt.Errorf("parsing mods array in mod-list.json: %w", err)
+			}
+		}
+		for _, e := range entries {
+			if name := modListEntryName(e); name != "" {
+				existing[name] = true
+			}
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// Fresh server with no mod-list.json yet; start from an empty document.
+	default:
+		return fmt.Errorf("reading mod-list.json: %w", err)
+	}
+
+	// Append only mods that have no entry yet, in deterministic order.
+	type newEntry struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
-	type modOut struct {
-		Mods []modEntry `json:"mods"`
-	}
 
 	u.modsMu.RLock()
-	out := modOut{Mods: make([]modEntry, 0, len(u.mods))}
-	for mod, data := range u.mods {
-		out.Mods = append(out.Mods, modEntry{Name: mod, Enabled: data.Enabled})
+	added := make([]newEntry, 0, len(u.mods))
+	for name, data := range u.mods {
+		if !existing[name] {
+			added = append(added, newEntry{Name: name, Enabled: data.Enabled})
+		}
 	}
 	u.modsMu.RUnlock()
 
-	slices.SortFunc(out.Mods, func(a, b modEntry) int {
+	slices.SortFunc(added, func(a, b newEntry) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	modListPath := filepath.Join(u.modPath, "mod-list.json")
-	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format("2006-01-02_1504.05")))
-
-	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
+	for _, e := range added {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("marshalling mod-list entry %q: %w", e.Name, err)
+		}
+		entries = append(entries, raw)
 	}
 
-	bytes, err := json.MarshalIndent(out, "", "  ")
+	rawMods, err := json.Marshal(entries)
+	if err != nil {
+		return fmt.Errorf("marshalling mods array: %w", err)
+	}
+	root["mods"] = rawMods
+
+	encoded, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling mod-list: %w", err)
 	}
 
+	// Most runs change nothing. Rewriting an identical file would churn the
+	// mods directory with a backup per run, in the same directory Factorio and
+	// server panels scan.
+	if sameJSON(originalRaw, encoded) {
+		return nil
+	}
+
+	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format(modListBackupStamp)))
+	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
+	}
+
 	tmpPath := modListPath + ".tmp"
-	if err := os.WriteFile(tmpPath, bytes, 0600); err != nil {
+	if err := os.WriteFile(tmpPath, encoded, 0600); err != nil {
 		return fmt.Errorf("writing mod-list to temporary file: %w", err)
 	}
 
@@ -600,7 +781,49 @@ func (u *Updater) saveModList() error {
 		return fmt.Errorf("atomically renaming mod-list: %w", err)
 	}
 
+	u.pruneModListBackups()
+
 	return nil
+}
+
+// sameJSON reports whether two JSON documents are identical once insignificant
+// whitespace is removed.
+func sameJSON(a, b []byte) bool {
+	if len(a) == 0 {
+		return false
+	}
+	var ac, bc bytes.Buffer
+	if json.Compact(&ac, a) != nil || json.Compact(&bc, b) != nil {
+		return false
+	}
+	return ac.String() == bc.String()
+}
+
+// pruneModListBackups keeps only the most recent keepModListBackups timestamped
+// backups, so a scheduled run does not accumulate one file per invocation.
+func (u *Updater) pruneModListBackups() {
+	entries, err := os.ReadDir(u.modPath)
+	if err != nil {
+		return
+	}
+
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && modListBackupRe.MatchString(e.Name()) {
+			backups = append(backups, e.Name())
+		}
+	}
+	if len(backups) <= keepModListBackups {
+		return
+	}
+
+	// The timestamp layout sorts chronologically as text.
+	slices.Sort(backups)
+	for _, name := range backups[:len(backups)-keepModListBackups] {
+		if err := os.Remove(filepath.Join(u.modPath, name)); err != nil {
+			pterm.Warning.Printf("Failed to remove old mod-list backup %s: %v\n", name, err)
+		}
+	}
 }
 
 // UpdateMods iterates over all tracked mods, pruning outdated releases and
@@ -610,9 +833,11 @@ func (u *Updater) saveModList() error {
 // successfully updated mods even during partial Mod Portal outages.
 func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
+	var skipped []string
 	var updatedCount atomic.Int32
 
-	// mu provides thread-safe appends to the errs slice across parallel downloads.
+	// mu provides thread-safe appends to the errs and skipped slices across
+	// parallel downloads.
 	var mu sync.Mutex
 
 	var multi *pterm.MultiPrinter
@@ -655,13 +880,18 @@ func (u *Updater) UpdateMods() (int, error) {
 	for _, data := range sortedMods {
 		eg.Go(func() error {
 			if data.Latest == nil {
+				// Having no release for this Factorio branch is an ordinary
+				// state -- the mod may not be updated yet, or may have been
+				// delisted. It is reported, but it is not a failure: treating
+				// it as one made the process exit non-zero and could abort a
+				// server's pre-start hook over a single lagging mod.
 				mu.Lock()
-				errs = append(errs, fmt.Errorf("metadata or release missing for mod %q on factorio version %q", data.Name, u.factVersion))
+				skipped = append(skipped, data.Name)
 				mu.Unlock()
 				return nil
 			}
 
-			didUpdate, err := u.downloadLatest(data.Name, multi)
+			didUpdate, err := u.downloadLatest(data, multi)
 
 			mu.Lock()
 			if err != nil {
@@ -691,12 +921,26 @@ func (u *Updater) UpdateMods() (int, error) {
 		fmt.Println() // Flush cursor downward to prevent print masking
 	}
 
+	slices.Sort(skipped)
+	for _, name := range skipped {
+		u.WriteLog("Skipped %s: no release compatible with factorio %s", name, u.factVersion)
+	}
+	if len(skipped) > 0 {
+		msg := fmt.Sprintf("Skipped %d mod(s) with no release for factorio %s: %s",
+			len(skipped), u.factVersion, strings.Join(skipped, ", "))
+		if pterm.RawOutput {
+			pterm.Println(msg)
+		} else {
+			pterm.Warning.Println(msg)
+		}
+	}
+
 	// Safely prune old mod releases sequentially after rendering stops
 	for _, data := range sortedMods {
 		if data.Latest == nil {
 			continue
 		}
-		if err := u.pruneOld(data.Name); err != nil {
+		if err := u.pruneOld(data); err != nil {
 			errs = append(errs, fmt.Errorf("pruning old releases for %q: %w", data.Name, err))
 		}
 	}
@@ -710,11 +954,13 @@ func (u *Updater) UpdateMods() (int, error) {
 
 // pruneOld removes all versioned zip files for the given mod that do not
 // match the latest release version, ONLY if the latest version exists on disk.
-func (u *Updater) pruneOld(mod string) error {
-	data := u.mods[mod]
+// The caller passes the tracked mod directly rather than a name, so no lookup
+// against the shared map is needed here.
+func (u *Updater) pruneOld(data *ModData) error {
 	if data == nil || data.Latest == nil {
 		return nil
 	}
+	mod := data.Name
 	if data.Latest.FileName == "" {
 		return fmt.Errorf("latest release for %q has empty filename, skipping prune", mod)
 	}
@@ -761,12 +1007,18 @@ func (u *Updater) pruneOld(mod string) error {
 }
 
 // downloadLatest checks whether the given mod needs a download (new install,
-// version mismatch, or hash mismatch) and fetches it from the Mod Portal.
-// It returns a boolean marking true if updated.
-func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, error) {
-	data := u.mods[mod]
+// outdated version, or hash mismatch) and fetches it from the Mod Portal.
+// It returns true when a file was written.
+// Why: Takes the tracked mod by pointer rather than by name so the concurrent
+// download path never reads the shared mods map, which is guarded by a mutex
+// everywhere else and was being read here from several goroutines at once.
+func (u *Updater) downloadLatest(data *ModData, multi *pterm.MultiPrinter) (bool, error) {
+	mod := data.Name
 	latest := data.Latest
 
+	if latest == nil {
+		return false, fmt.Errorf("no compatible release recorded for %q", mod)
+	}
 	if latest.FileName == "" {
 		return false, fmt.Errorf("latest release for %q has empty filename", mod)
 	}
@@ -776,9 +1028,19 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	targetPath := filepath.Join(u.modPath, safeFileName)
 
 	needsDownload := false
-	if !data.Installed || data.Version != latest.Version {
+	switch {
+	case !data.Installed:
 		needsDownload = true
-	} else if !validateSHA1(latest.Sha1, targetPath) {
+	case compareVersions(latest.Version, data.Version) > 0:
+		needsDownload = true
+	case compareVersions(latest.Version, data.Version) < 0:
+		// The installed release is newer than the latest compatible one. Never
+		// replace a newer mod with an older one without being asked.
+		u.WriteLog("Keeping %s (%s); latest compatible release is older (%s)", data.Title, data.Version, latest.Version)
+		return false, nil
+	case !validateSHA1(latest.Sha1, targetPath):
+		// Same version on disk but the contents do not match the published
+		// digest, so the local copy is corrupt or truncated.
 		needsDownload = true
 	}
 
@@ -803,7 +1065,8 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	}
 
 	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
-		return false, err
+		// The URL carries username and token; never let it reach stdout or the log file.
+		return false, u.redactCredentials(err)
 	}
 
 	u.WriteLog("Downloaded %s (%s)", data.Title, latest.Version)
@@ -922,4 +1185,44 @@ func isBuiltInMod(name string) bool {
 	default:
 		return false
 	}
+}
+
+// redactedError wraps an error whose rendered message has had credentials
+// stripped out. Error returns the sanitized text while Unwrap preserves the
+// original chain for errors.Is/As.
+// Why: Go's *url.Error embeds the full request URL, query string included, so
+// any transport failure during an authenticated download would otherwise print
+// the factorio.com token to the console and persist it in last-mod-update.log.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactSecrets replaces every occurrence of the given secrets in err's message
+// with a placeholder, covering both the raw and URL-encoded forms.
+func redactSecrets(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+		if esc := url.QueryEscape(s); esc != s {
+			msg = strings.ReplaceAll(msg, esc, "[REDACTED]")
+		}
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+// redactCredentials sanitizes an error of this Updater's username and token.
+// Every error originating from an authenticated request must pass through here
+// before it reaches the console, the returned error chain, or the log file.
+func (u *Updater) redactCredentials(err error) error {
+	return redactSecrets(err, u.token, u.username)
 }

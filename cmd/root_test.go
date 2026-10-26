@@ -108,13 +108,21 @@ func TestResolvePaths(t *testing.T) {
 		}
 	})
 
-	t.Run("only --mod-path set without --bin-path returns error", func(t *testing.T) {
+	t.Run("only --mod-path set is sufficient", func(t *testing.T) {
+		// The Factorio version is read from the bundled base mod's info.json,
+		// so the executable path is optional.
 		cfg := CLIConfig{
 			ModPath: "/some/mods",
 		}
-		_, _, err := resolvePaths(cfg)
-		if err == nil {
-			t.Fatal("expected error when --bin-path is missing")
+		fp, mp, err := resolvePaths(cfg)
+		if err != nil {
+			t.Fatalf("unexpected error when only --mod-path is given: %v", err)
+		}
+		if mp != "/some/mods" {
+			t.Errorf("mod-path = %q; want /some/mods", mp)
+		}
+		if fp != "" {
+			t.Errorf("bin-path = %q; want empty when not supplied", fp)
 		}
 	})
 }
