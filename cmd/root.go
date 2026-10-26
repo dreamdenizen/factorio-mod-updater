@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"time"
 
-	"factorio-updater/internal/factorio"
+	"github.com/dreamdenizen/factorio-mod-updater/internal/factorio"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"

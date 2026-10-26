@@ -1,4 +1,4 @@
-module factorio-updater
+module github.com/dreamdenizen/factorio-mod-updater
 
 go 1.26.0
 

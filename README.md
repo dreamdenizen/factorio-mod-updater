@@ -39,6 +39,14 @@ You can then move it somewhere on your PATH if you would like to run it from any
 sudo mv mod_updater /usr/local/bin/
 ```
 
+### Install with Go
+
+If you already have Go 1.26+ installed, you can skip the download entirely:
+
+```bash
+go install github.com/dreamdenizen/factorio-mod-updater@latest
+```
+
 ## Usage
 
 The simplest way to use the updater is to just point it at your Factorio installation folder. By default, it will check for updates, show you what's old, and automatically download the upgrades.
