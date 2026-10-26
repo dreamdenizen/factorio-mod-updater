@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pterm/pterm"
 )
 
 func TestVersionMatch(t *testing.T) {
@@ -1418,5 +1420,41 @@ func TestDetermineVersionErrorsClearlyWithoutBinaryOrInfoJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--bin-path") {
 		t.Errorf("error should point at --bin-path, got: %v", err)
+	}
+}
+
+// TestUpdateModsSkipsIncompatibleWithoutFailing is the regression test for the
+// exit code. A mod with no release for the installed Factorio branch is an
+// ordinary state, not a failure: returning an error here propagated to
+// os.Exit(1), which can abort a server panel's pre-start hook over one lagging
+// mod, contradicting the documented promise that the server still starts.
+func TestUpdateModsSkipsIncompatibleWithoutFailing(t *testing.T) {
+	pterm.RawOutput = true
+	t.Cleanup(func() { pterm.RawOutput = false })
+
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"),
+		[]byte(`{"mods":[{"name":"abandoned-mod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+
+	u := &Updater{
+		modPath:     tmpDir,
+		factVersion: "2.0",
+		mods: map[string]*ModData{
+			// Delisted or not yet updated: metadata resolved, no compatible release.
+			"abandoned-mod": {Name: "abandoned-mod", Title: "Abandoned Mod", Enabled: true, Latest: nil},
+		},
+	}
+
+	updated, err := u.UpdateMods()
+	if err != nil {
+		t.Fatalf("a mod with no compatible release must not fail the run, got: %v", err)
+	}
+	if updated != 0 {
+		t.Errorf("updated count = %d; want 0", updated)
+	}
+	if !strings.Contains(u.logBuf.String(), "abandoned-mod") {
+		t.Error("the skipped mod should still be recorded in the log")
 	}
 }

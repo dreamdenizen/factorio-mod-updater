@@ -759,9 +759,11 @@ func (u *Updater) saveModList() error {
 // successfully updated mods even during partial Mod Portal outages.
 func (u *Updater) UpdateMods() (int, error) {
 	var errs []error
+	var skipped []string
 	var updatedCount atomic.Int32
 
-	// mu provides thread-safe appends to the errs slice across parallel downloads.
+	// mu provides thread-safe appends to the errs and skipped slices across
+	// parallel downloads.
 	var mu sync.Mutex
 
 	var multi *pterm.MultiPrinter
@@ -804,8 +806,13 @@ func (u *Updater) UpdateMods() (int, error) {
 	for _, data := range sortedMods {
 		eg.Go(func() error {
 			if data.Latest == nil {
+				// Having no release for this Factorio branch is an ordinary
+				// state -- the mod may not be updated yet, or may have been
+				// delisted. It is reported, but it is not a failure: treating
+				// it as one made the process exit non-zero and could abort a
+				// server's pre-start hook over a single lagging mod.
 				mu.Lock()
-				errs = append(errs, fmt.Errorf("metadata or release missing for mod %q on factorio version %q", data.Name, u.factVersion))
+				skipped = append(skipped, data.Name)
 				mu.Unlock()
 				return nil
 			}
@@ -838,6 +845,20 @@ func (u *Updater) UpdateMods() (int, error) {
 	if multi != nil {
 		_, _ = multi.Stop()
 		fmt.Println() // Flush cursor downward to prevent print masking
+	}
+
+	slices.Sort(skipped)
+	for _, name := range skipped {
+		u.WriteLog("Skipped %s: no release compatible with factorio %s", name, u.factVersion)
+	}
+	if len(skipped) > 0 {
+		msg := fmt.Sprintf("Skipped %d mod(s) with no release for factorio %s: %s",
+			len(skipped), u.factVersion, strings.Join(skipped, ", "))
+		if pterm.RawOutput {
+			pterm.Println(msg)
+		} else {
+			pterm.Warning.Println(msg)
+		}
 	}
 
 	// Safely prune old mod releases sequentially after rendering stops
