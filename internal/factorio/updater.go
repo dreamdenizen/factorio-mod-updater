@@ -557,38 +557,97 @@ func (u *Updater) GetMods() []*ModData {
 	return list
 }
 
-// saveModList writes the current mod tracking state back to mod-list.json,
-// creating a timestamped backup of the previous version first.
+// modListEntryName extracts the "name" field from a raw mod-list.json entry,
+// returning "" when the entry is not an object with a usable name.
+func modListEntryName(raw json.RawMessage) string {
+	var e struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return ""
+	}
+	return e.Name
+}
+
+// saveModList merges newly tracked mods into the existing mod-list.json,
+// preserving every entry already in the file, and creating a timestamped
+// backup of the previous version first.
+// Why: The tracking map deliberately omits built-in and DLC mods (base,
+// space-age, quality, elevated-rails, recycler) so they are never fetched from
+// the portal. Regenerating the file from that map therefore deleted their
+// entries, and Factorio treats a mod with no entry as ENABLED -- silently
+// switching a deliberately disabled DLC back on and changing the prototype set
+// of an existing save. Entries are now preserved verbatim, including fields
+// this tool does not model, and only genuinely new mods are appended.
 func (u *Updater) saveModList() error {
-	type modEntry struct {
+	modListPath := filepath.Join(u.modPath, "mod-list.json")
+
+	root := map[string]json.RawMessage{}
+	var entries []json.RawMessage
+	existing := make(map[string]bool)
+
+	switch data, err := os.ReadFile(modListPath); {
+	case err == nil:
+		if err := json.Unmarshal(data, &root); err != nil {
+			return fmt.Errorf("parsing existing mod-list.json: %w", err)
+		}
+		if rawMods, ok := root["mods"]; ok {
+			if err := json.Unmarshal(rawMods, &entries); err != nil {
+				return fmt.Errorf("parsing mods array in mod-list.json: %w", err)
+			}
+		}
+		for _, e := range entries {
+			if name := modListEntryName(e); name != "" {
+				existing[name] = true
+			}
+		}
+	case errors.Is(err, fs.ErrNotExist):
+		// Fresh server with no mod-list.json yet; start from an empty document.
+	default:
+		return fmt.Errorf("reading mod-list.json: %w", err)
+	}
+
+	// Append only mods that have no entry yet, in deterministic order.
+	type newEntry struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
-	type modOut struct {
-		Mods []modEntry `json:"mods"`
-	}
 
 	u.modsMu.RLock()
-	out := modOut{Mods: make([]modEntry, 0, len(u.mods))}
-	for mod, data := range u.mods {
-		out.Mods = append(out.Mods, modEntry{Name: mod, Enabled: data.Enabled})
+	added := make([]newEntry, 0, len(u.mods))
+	for name, data := range u.mods {
+		if !existing[name] {
+			added = append(added, newEntry{Name: name, Enabled: data.Enabled})
+		}
 	}
 	u.modsMu.RUnlock()
 
-	slices.SortFunc(out.Mods, func(a, b modEntry) int {
+	slices.SortFunc(added, func(a, b newEntry) int {
 		return cmp.Compare(a.Name, b.Name)
 	})
 
-	modListPath := filepath.Join(u.modPath, "mod-list.json")
-	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format("2006-01-02_1504.05")))
-
-	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
+	for _, e := range added {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("marshalling mod-list entry %q: %w", e.Name, err)
+		}
+		entries = append(entries, raw)
 	}
 
-	bytes, err := json.MarshalIndent(out, "", "  ")
+	rawMods, err := json.Marshal(entries)
+	if err != nil {
+		return fmt.Errorf("marshalling mods array: %w", err)
+	}
+	root["mods"] = rawMods
+
+	bytes, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling mod-list: %w", err)
+	}
+
+	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format("2006-01-02_1504.05")))
+	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
 	}
 
 	tmpPath := modListPath + ".tmp"

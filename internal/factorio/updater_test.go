@@ -1140,3 +1140,88 @@ func TestDownloadLatestRedactsCredentials(t *testing.T) {
 		t.Errorf("expected a redaction marker, got: %q", err.Error())
 	}
 }
+
+// TestSaveModListPreservesExistingEntries is the regression test for the
+// mod-list.json erasure bug. Built-in and DLC mods are deliberately excluded
+// from the tracking map so they are never downloaded, but they must still
+// survive a rewrite: Factorio treats a mod with no entry as enabled, so losing
+// `"space-age": false` silently re-enables the DLC.
+func TestSaveModListPreservesExistingEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	original := `{
+  "mods": [
+    {"name": "base", "enabled": true},
+    {"name": "space-age", "enabled": false},
+    {"name": "quality", "enabled": false},
+    {"name": "elevated-rails", "enabled": false},
+    {"name": "helmod", "enabled": true, "version": "2.2.12"},
+    {"name": "a-local-only-mod", "enabled": false}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(original), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+
+	// The tracking map mirrors reality: built-ins filtered out by parseModList,
+	// plus one dependency newly discovered during resolution.
+	u := &Updater{
+		modPath: tmpDir,
+		mods: map[string]*ModData{
+			"helmod": {Name: "helmod", Enabled: true},
+			"flib":   {Name: "flib", Enabled: true},
+		},
+	}
+
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("saveModList() returned unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading written mod-list.json: %v", err)
+	}
+
+	var result struct {
+		Mods []map[string]any `json:"mods"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("parsing written mod-list.json: %v", err)
+	}
+
+	got := make(map[string]map[string]any, len(result.Mods))
+	for _, m := range result.Mods {
+		name, _ := m["name"].(string)
+		got[name] = m
+	}
+
+	// Nothing may be deleted, and disabled DLC must stay disabled.
+	for _, name := range []string{"base", "space-age", "quality", "elevated-rails", "helmod", "a-local-only-mod"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("entry %q was deleted from mod-list.json", name)
+		}
+	}
+	for _, name := range []string{"space-age", "quality", "elevated-rails", "a-local-only-mod"} {
+		if entry, ok := got[name]; ok {
+			if enabled, _ := entry["enabled"].(bool); enabled {
+				t.Errorf("%q was silently re-enabled (enabled=true); want false", name)
+			}
+		}
+	}
+
+	// Fields this tool does not model must survive untouched.
+	if v, _ := got["helmod"]["version"].(string); v != "2.2.12" {
+		t.Errorf(`helmod lost its unmodelled "version" field: got %q, want "2.2.12"`, v)
+	}
+
+	// Newly discovered dependencies are appended.
+	if entry, ok := got["flib"]; !ok {
+		t.Error("newly discovered dependency 'flib' was not added to mod-list.json")
+	} else if enabled, _ := entry["enabled"].(bool); !enabled {
+		t.Error("newly added 'flib' should be enabled")
+	}
+
+	if len(result.Mods) != 7 {
+		t.Errorf("expected 7 entries (6 original + flib), got %d", len(result.Mods))
+	}
+}
