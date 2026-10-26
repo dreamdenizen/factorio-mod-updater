@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -331,8 +332,11 @@ func (u *Updater) parseModList() error {
 					name := match[1]
 					version := match[2]
 					if m, ok := u.mods[name]; ok {
-						m.Installed = true
-						m.Version = version
+						// Several versions may sit side by side; the highest is live.
+						if !m.Installed || compareVersions(version, m.Version) > 0 {
+							m.Installed = true
+							m.Version = version
+						}
 					} else {
 						u.mods[name] = &ModData{
 							Name:      name,
@@ -369,6 +373,31 @@ func versionMatch(installed, mod string) bool {
 	}
 
 	return modMatch[1] == instMatch[1] && modMatch[2] == instMatch[2]
+}
+
+// compareVersions compares two dotted numeric version strings component by
+// component, returning -1, 0 or 1. Absent components count as zero, so "2.1"
+// and "2.1.0" are equal, and non-numeric components degrade to zero rather
+// than erroring.
+// Why: Mod Portal releases are ordered by publish time, not by version, so the
+// latest release can only be identified by comparing versions numerically.
+// String comparison is unsound here ("2.9.0" > "2.10.0" lexically).
+func compareVersions(a, b string) int {
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := range max(len(as), len(bs)) {
+		var ai, bi int
+		if i < len(as) {
+			ai, _ = strconv.Atoi(strings.TrimSpace(as[i]))
+		}
+		if i < len(bs) {
+			bi, _ = strconv.Atoi(strings.TrimSpace(bs[i]))
+		}
+		if ai != bi {
+			return cmp.Compare(ai, bi)
+		}
+	}
+	return 0
 }
 
 // RetrieveModMetadata queries the Factorio Mod Portal API for a specific mod,
@@ -414,10 +443,16 @@ func (u *Updater) RetrieveModMetadata(mod string) error {
 	m.Title = meta.Title
 	m.Deprecated = meta.Deprecated
 
+	// The API returns releases ordered by publish time, not by version, so an
+	// author backporting to an older branch leaves a lower version last. Select
+	// the highest compatible version explicitly.
 	var latest *ModRelease
 	for i := range meta.Releases {
 		rel := &meta.Releases[i]
-		if versionMatch(u.factVersion, rel.InfoJSON.FactorioVersion) {
+		if !versionMatch(u.factVersion, rel.InfoJSON.FactorioVersion) {
+			continue
+		}
+		if latest == nil || compareVersions(rel.Version, latest.Version) > 0 {
 			latest = rel
 		}
 	}
@@ -835,9 +870,19 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	targetPath := filepath.Join(u.modPath, safeFileName)
 
 	needsDownload := false
-	if !data.Installed || data.Version != latest.Version {
+	switch {
+	case !data.Installed:
 		needsDownload = true
-	} else if !validateSHA1(latest.Sha1, targetPath) {
+	case compareVersions(latest.Version, data.Version) > 0:
+		needsDownload = true
+	case compareVersions(latest.Version, data.Version) < 0:
+		// The installed release is newer than the latest compatible one. Never
+		// replace a newer mod with an older one without being asked.
+		u.WriteLog("Keeping %s (%s); latest compatible release is older (%s)", data.Title, data.Version, latest.Version)
+		return false, nil
+	case !validateSHA1(latest.Sha1, targetPath):
+		// Same version on disk but the contents do not match the published
+		// digest, so the local copy is corrupt or truncated.
 		needsDownload = true
 	}
 

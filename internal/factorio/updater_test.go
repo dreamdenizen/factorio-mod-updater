@@ -1225,3 +1225,133 @@ func TestSaveModListPreservesExistingEntries(t *testing.T) {
 		t.Errorf("expected 7 entries (6 original + flib), got %d", len(result.Mods))
 	}
 }
+
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"1.0.0", "1.0.0", 0},
+		{"2.1", "2.1.0", 0},
+		{"2.0.16", "2.2.0", -1},
+		{"2.2.1", "2.0.17", 1},
+		{"2.10.0", "2.9.0", 1},  // lexical comparison would get this backwards
+		{"2.9.0", "2.10.0", -1}, // and this one too
+		{"1.0.0", "1.0.1", -1},
+		{"0.18.47", "1.1.0", -1},
+		{"", "0.0.0", 0},
+		{"garbage", "0", 0},
+	}
+	for _, tt := range tests {
+		if got := compareVersions(tt.a, tt.b); got != tt.want {
+			t.Errorf("compareVersions(%q, %q) = %d; want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// TestRetrieveModMetadataSelectsHighestVersion is the regression test for
+// release selection. The Mod Portal orders releases by publish time, not by
+// version, so an author backporting to an older branch leaves a lower version
+// as the last element. This mirrors helmod's real publish order.
+func TestRetrieveModMetadataSelectsHighestVersion(t *testing.T) {
+	body := `{
+	  "title": "Helmod",
+	  "deprecated": false,
+	  "releases": [
+	    {"version": "2.2.0",  "file_name": "helmod_2.2.0.zip",  "sha1": "a", "info_json": {"factorio_version": "2.0"}},
+	    {"version": "2.2.1",  "file_name": "helmod_2.2.1.zip",  "sha1": "b", "info_json": {"factorio_version": "2.0"}},
+	    {"version": "1.1.9",  "file_name": "helmod_1.1.9.zip",  "sha1": "c", "info_json": {"factorio_version": "1.1"}},
+	    {"version": "2.0.16", "file_name": "helmod_2.0.16.zip", "sha1": "d", "info_json": {"factorio_version": "2.0"}}
+	  ]
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	u := &Updater{
+		modServerURL: srv.URL,
+		factVersion:  "2.0",
+		mods:         map[string]*ModData{"helmod": {Name: "helmod"}},
+		httpClient:   srv.Client(),
+	}
+
+	if err := u.RetrieveModMetadata("helmod"); err != nil {
+		t.Fatalf("RetrieveModMetadata() returned unexpected error: %v", err)
+	}
+
+	latest := u.mods["helmod"].Latest
+	if latest == nil {
+		t.Fatal("no compatible release was selected")
+	}
+	if latest.Version != "2.2.1" {
+		t.Errorf("selected version %q; want 2.2.1 (the highest compatible, not the last listed)", latest.Version)
+	}
+}
+
+// TestDownloadLatestNeverDowngrades verifies the monotonicity guard: when the
+// installed release is newer than the latest compatible one, nothing is
+// fetched and nothing is reported as updated.
+func TestDownloadLatestNeverDowngrades(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	u := &Updater{
+		// Any network attempt against a closed port would surface as an error.
+		modServerURL: "http://127.0.0.1:1",
+		modPath:      tmpDir,
+		username:     "u",
+		token:        "t",
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+		mods: map[string]*ModData{
+			"helmod": {
+				Name:      "helmod",
+				Title:     "Helmod",
+				Installed: true,
+				Version:   "2.2.1",
+				Latest: &ModRelease{
+					Version:     "2.0.16",
+					FileName:    "helmod_2.0.16.zip",
+					DownloadURL: "/download/helmod/old",
+					Sha1:        "0000000000000000000000000000000000000000",
+				},
+			},
+		},
+	}
+
+	updated, err := u.downloadLatest("helmod", nil)
+	if err != nil {
+		t.Fatalf("expected no error and no network attempt, got: %v", err)
+	}
+	if updated {
+		t.Error("reported an update while moving from 2.2.1 down to 2.0.16")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "helmod_2.0.16.zip")); err == nil {
+		t.Error("the older release was downloaded despite being a downgrade")
+	}
+}
+
+// TestParseModListPrefersHighestInstalledVersion covers several zips of the
+// same mod sitting side by side; the highest version is the live one, which
+// directory order does not reliably give.
+func TestParseModListPrefersHighestInstalledVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"), []byte(`{"mods":[{"name":"helmod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+	for _, v := range []string{"2.10.0", "2.9.0", "2.2.1"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("helmod_%s.zip", v)), []byte("x"), 0600); err != nil {
+			t.Fatalf("seeding zip: %v", err)
+		}
+	}
+
+	u := &Updater{modPath: tmpDir, mods: make(map[string]*ModData)}
+	if err := u.parseModList(); err != nil {
+		t.Fatalf("parseModList() returned unexpected error: %v", err)
+	}
+
+	if got := u.mods["helmod"].Version; got != "2.10.0" {
+		t.Errorf("installed version = %q; want 2.10.0 (highest on disk)", got)
+	}
+}
