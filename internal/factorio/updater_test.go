@@ -41,9 +41,32 @@ func TestVersionMatch(t *testing.T) {
 			expected:  false,
 		},
 		{
-			name:      "mismatch full",
+			// Compatibility is decided on the major.minor branch; a patch
+			// component declared by a mod is informational.
+			name:      "patch component is ignored",
 			installed: "2.0.1",
 			mod:       "2.0.2",
+			expected:  true,
+		},
+		{
+			// Regression: determineVersion only ever yields major.minor, so
+			// comparing a three-component factorio_version as a string
+			// rejected every mod that declared one.
+			name:      "three component mod version on major minor install",
+			installed: "2.0",
+			mod:       "2.0.0",
+			expected:  true,
+		},
+		{
+			name:      "three component mod version with high patch",
+			installed: "2.0",
+			mod:       "2.0.55",
+			expected:  true,
+		},
+		{
+			name:      "three component mod version on wrong branch",
+			installed: "2.0",
+			mod:       "1.1.0",
 			expected:  false,
 		},
 		{
@@ -1353,5 +1376,47 @@ func TestParseModListPrefersHighestInstalledVersion(t *testing.T) {
 
 	if got := u.mods["helmod"].Version; got != "2.10.0" {
 		t.Errorf("installed version = %q; want 2.10.0 (highest on disk)", got)
+	}
+}
+
+// TestDetermineVersionPrefersBaseInfoJSON verifies that the Factorio version
+// is read from the bundled base mod rather than by executing the binary, so a
+// missing, non-executable or slow executable cannot abort the run.
+func TestDetermineVersionPrefersBaseInfoJSON(t *testing.T) {
+	root := t.TempDir()
+	baseDir := filepath.Join(root, "data", "base")
+	if err := os.MkdirAll(baseDir, 0750); err != nil {
+		t.Fatalf("creating base mod dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "info.json"),
+		[]byte(`{"name":"base","version":"2.0.55","title":"Base Mod"}`), 0600); err != nil {
+		t.Fatalf("seeding info.json: %v", err)
+	}
+
+	u := &Updater{
+		modPath: filepath.Join(root, "mods"),
+		// Deliberately bogus: it must never be executed.
+		factPath: filepath.Join(root, "bin", "x64", "does-not-exist"),
+	}
+
+	if err := u.determineVersion(); err != nil {
+		t.Fatalf("determineVersion() returned unexpected error: %v", err)
+	}
+	if u.factVersion != "2.0" {
+		t.Errorf("factVersion = %q; want 2.0", u.factVersion)
+	}
+}
+
+// TestDetermineVersionErrorsClearlyWithoutBinaryOrInfoJSON checks the guidance
+// given when neither source is available.
+func TestDetermineVersionErrorsClearlyWithoutBinaryOrInfoJSON(t *testing.T) {
+	u := &Updater{modPath: filepath.Join(t.TempDir(), "mods")}
+
+	err := u.determineVersion()
+	if err == nil {
+		t.Fatal("expected an error when neither info.json nor a binary is available")
+	}
+	if !strings.Contains(err.Error(), "--bin-path") {
+		t.Errorf("error should point at --bin-path, got: %v", err)
 	}
 }

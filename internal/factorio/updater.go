@@ -264,11 +264,66 @@ func (u *Updater) parseTokens() error {
 	return nil
 }
 
-// determineVersion executes the Factorio binary with --version and parses
-// the major.minor version string from its output.
-// Why: Context timeout prevents the application from hanging indefinitely if
-// the local factorio executable is artificially slow or blocking.
+// baseInfoCandidates lists the places the bundled base mod's info.json may sit,
+// derived from the mods directory and from the executable path.
+func (u *Updater) baseInfoCandidates() []string {
+	var out []string
+	if u.modPath != "" {
+		root := filepath.Dir(filepath.Clean(u.modPath))
+		out = append(out, filepath.Join(root, "data", "base", "info.json"))
+	}
+	if u.factPath != "" {
+		// <root>/bin/x64/factorio -> <root>
+		root := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Clean(u.factPath))))
+		out = append(out, filepath.Join(root, "data", "base", "info.json"))
+	}
+	return slices.Compact(out)
+}
+
+// baseInfoVersion reads the first readable base mod info.json from the given
+// paths and returns the major.minor Factorio version it declares.
+func baseInfoVersion(paths ...string) (string, bool) {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var info struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &info); err != nil {
+			continue
+		}
+		if m := versionRe.FindStringSubmatch(info.Version); len(m) > 2 {
+			return fmt.Sprintf("%s.%s", m[1], m[2]), true
+		}
+	}
+	return "", false
+}
+
+// determineVersion resolves the installed Factorio major.minor version,
+// preferring the bundled base mod's info.json and falling back to executing
+// the binary with --version.
+// Why: The base mod ships with the game and declares the same version the
+// binary reports, so reading it needs no execute permission, cannot hang, and
+// works where the executable lives outside the server directory. Executing the
+// binary remains as a fallback for unusual layouts, with a context timeout so
+// a slow or blocking executable cannot stall the run indefinitely.
 func (u *Updater) determineVersion() error {
+	candidates := u.baseInfoCandidates()
+	if version, ok := baseInfoVersion(candidates...); ok {
+		u.factVersion = version
+		return nil
+	}
+
+	if u.factPath == "" {
+		return fmt.Errorf("could not read the factorio version from %s; pass --bin-path to query the binary instead",
+			strings.Join(candidates, " or "))
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -368,10 +423,10 @@ func versionMatch(installed, mod string) bool {
 		return true
 	}
 
-	if len(modMatch) > 3 && modMatch[3] != "" && len(instMatch) > 3 {
-		return mod == installed
-	}
-
+	// Compatibility is a property of the major.minor branch. Where a mod
+	// declares a third component it is informational, so it is ignored: the
+	// detected Factorio version is only ever major.minor, and comparing
+	// "2.0.0" against "2.0" as strings rejected every such mod outright.
 	return modMatch[1] == instMatch[1] && modMatch[2] == instMatch[2]
 }
 
