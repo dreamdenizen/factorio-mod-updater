@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersionMatch(t *testing.T) {
@@ -1059,5 +1061,82 @@ func TestRetrieveModMetadata(t *testing.T) {
 	}
 	if mod.Latest.Sha1 == "" {
 		t.Error("latest release SHA-1 should not be empty")
+	}
+}
+
+// TestRedactSecrets verifies that credentials are stripped from error text in
+// both their raw and URL-encoded forms.
+func TestRedactSecrets(t *testing.T) {
+	t.Run("nil error stays nil", func(t *testing.T) {
+		if got := redactSecrets(nil, "tok"); got != nil {
+			t.Errorf("redactSecrets(nil) = %v; want nil", got)
+		}
+	})
+
+	t.Run("empty secrets are ignored", func(t *testing.T) {
+		err := redactSecrets(fmt.Errorf("boom"), "", "")
+		if err.Error() != "boom" {
+			t.Errorf("message = %q; want %q", err.Error(), "boom")
+		}
+	})
+
+	t.Run("raw and encoded forms are both replaced", func(t *testing.T) {
+		secret := "a b+c"
+		err := redactSecrets(fmt.Errorf("url=%s encoded=%s", secret, "a+b%2Bc"), secret)
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("raw secret survived redaction: %q", err.Error())
+		}
+	})
+
+	t.Run("original error remains unwrappable", func(t *testing.T) {
+		base := fmt.Errorf("token=hunter2")
+		wrapped := redactSecrets(base, "hunter2")
+		if !errors.Is(wrapped, base) {
+			t.Error("errors.Is could not reach the original error")
+		}
+	})
+}
+
+// TestDownloadLatestRedactsCredentials is the regression test for the
+// credential leak: Go's *url.Error embeds the full query string, so a transport
+// failure must not surface the factorio.com username or token.
+func TestDownloadLatestRedactsCredentials(t *testing.T) {
+	const (
+		token = "SUPERSECRETTOKEN99"
+		user  = "secret-operator"
+	)
+
+	u := &Updater{
+		// Port 1 is reserved and closed, forcing a dial error that carries the URL.
+		modServerURL: "http://127.0.0.1:1",
+		modPath:      t.TempDir(),
+		username:     user,
+		token:        token,
+		mods:         make(map[string]*ModData),
+		httpClient:   &http.Client{Timeout: 5 * time.Second},
+	}
+	u.mods["helmod"] = &ModData{
+		Name:  "helmod",
+		Title: "Helmod",
+		Latest: &ModRelease{
+			DownloadURL: "/download/helmod/deadbeef",
+			FileName:    "helmod_1.0.0.zip",
+			Version:     "1.0.0",
+			Sha1:        "0000000000000000000000000000000000000000",
+		},
+	}
+
+	_, err := u.downloadLatest("helmod", nil)
+	if err == nil {
+		t.Fatal("expected a transport error against a closed port")
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("token leaked into error text: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), user) {
+		t.Errorf("username leaked into error text: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("expected a redaction marker, got: %q", err.Error())
 	}
 }

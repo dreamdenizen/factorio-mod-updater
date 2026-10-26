@@ -803,7 +803,8 @@ func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, e
 	}
 
 	if err := downloadFile(u.httpClient, targetPath, dlURL.String(), p, latest.Sha1); err != nil {
-		return false, err
+		// The URL carries username and token; never let it reach stdout or the log file.
+		return false, u.redactCredentials(err)
 	}
 
 	u.WriteLog("Downloaded %s (%s)", data.Title, latest.Version)
@@ -922,4 +923,44 @@ func isBuiltInMod(name string) bool {
 	default:
 		return false
 	}
+}
+
+// redactedError wraps an error whose rendered message has had credentials
+// stripped out. Error returns the sanitized text while Unwrap preserves the
+// original chain for errors.Is/As.
+// Why: Go's *url.Error embeds the full request URL, query string included, so
+// any transport failure during an authenticated download would otherwise print
+// the factorio.com token to the console and persist it in last-mod-update.log.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactSecrets replaces every occurrence of the given secrets in err's message
+// with a placeholder, covering both the raw and URL-encoded forms.
+func redactSecrets(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, s, "[REDACTED]")
+		if esc := url.QueryEscape(s); esc != s {
+			msg = strings.ReplaceAll(msg, esc, "[REDACTED]")
+		}
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+// redactCredentials sanitizes an error of this Updater's username and token.
+// Every error originating from an authenticated request must pass through here
+// before it reaches the console, the returned error chain, or the log file.
+func (u *Updater) redactCredentials(err error) error {
+	return redactSecrets(err, u.token, u.username)
 }
