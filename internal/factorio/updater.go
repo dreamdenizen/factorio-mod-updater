@@ -891,7 +891,7 @@ func (u *Updater) UpdateMods() (int, error) {
 				return nil
 			}
 
-			didUpdate, err := u.downloadLatest(data.Name, multi)
+			didUpdate, err := u.downloadLatest(data, multi)
 
 			mu.Lock()
 			if err != nil {
@@ -940,7 +940,7 @@ func (u *Updater) UpdateMods() (int, error) {
 		if data.Latest == nil {
 			continue
 		}
-		if err := u.pruneOld(data.Name); err != nil {
+		if err := u.pruneOld(data); err != nil {
 			errs = append(errs, fmt.Errorf("pruning old releases for %q: %w", data.Name, err))
 		}
 	}
@@ -954,11 +954,13 @@ func (u *Updater) UpdateMods() (int, error) {
 
 // pruneOld removes all versioned zip files for the given mod that do not
 // match the latest release version, ONLY if the latest version exists on disk.
-func (u *Updater) pruneOld(mod string) error {
-	data := u.mods[mod]
+// The caller passes the tracked mod directly rather than a name, so no lookup
+// against the shared map is needed here.
+func (u *Updater) pruneOld(data *ModData) error {
 	if data == nil || data.Latest == nil {
 		return nil
 	}
+	mod := data.Name
 	if data.Latest.FileName == "" {
 		return fmt.Errorf("latest release for %q has empty filename, skipping prune", mod)
 	}
@@ -1005,12 +1007,18 @@ func (u *Updater) pruneOld(mod string) error {
 }
 
 // downloadLatest checks whether the given mod needs a download (new install,
-// version mismatch, or hash mismatch) and fetches it from the Mod Portal.
-// It returns a boolean marking true if updated.
-func (u *Updater) downloadLatest(mod string, multi *pterm.MultiPrinter) (bool, error) {
-	data := u.mods[mod]
+// outdated version, or hash mismatch) and fetches it from the Mod Portal.
+// It returns true when a file was written.
+// Why: Takes the tracked mod by pointer rather than by name so the concurrent
+// download path never reads the shared mods map, which is guarded by a mutex
+// everywhere else and was being read here from several goroutines at once.
+func (u *Updater) downloadLatest(data *ModData, multi *pterm.MultiPrinter) (bool, error) {
+	mod := data.Name
 	latest := data.Latest
 
+	if latest == nil {
+		return false, fmt.Errorf("no compatible release recorded for %q", mod)
+	}
 	if latest.FileName == "" {
 		return false, fmt.Errorf("latest release for %q has empty filename", mod)
 	}

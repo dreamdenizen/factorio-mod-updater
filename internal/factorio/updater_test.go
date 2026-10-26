@@ -571,7 +571,7 @@ func TestPruneOld(t *testing.T) {
 			},
 		}
 
-		if err := u.pruneOld("helmod"); err != nil {
+		if err := u.pruneOld(u.mods["helmod"]); err != nil {
 			t.Fatalf("pruneOld() returned unexpected error: %v", err)
 		}
 
@@ -616,7 +616,7 @@ func TestPruneOld(t *testing.T) {
 			},
 		}
 
-		err := u.pruneOld("helmod")
+		err := u.pruneOld(u.mods["helmod"])
 		if err == nil {
 			t.Fatal("pruneOld() should return error for empty FileName")
 		}
@@ -1151,7 +1151,7 @@ func TestDownloadLatestRedactsCredentials(t *testing.T) {
 		},
 	}
 
-	_, err := u.downloadLatest("helmod", nil)
+	_, err := u.downloadLatest(u.mods["helmod"], nil)
 	if err == nil {
 		t.Fatal("expected a transport error against a closed port")
 	}
@@ -1344,7 +1344,7 @@ func TestDownloadLatestNeverDowngrades(t *testing.T) {
 		},
 	}
 
-	updated, err := u.downloadLatest("helmod", nil)
+	updated, err := u.downloadLatest(u.mods["helmod"], nil)
 	if err != nil {
 		t.Fatalf("expected no error and no network attempt, got: %v", err)
 	}
