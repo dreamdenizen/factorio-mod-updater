@@ -1458,3 +1458,164 @@ func TestUpdateModsSkipsIncompatibleWithoutFailing(t *testing.T) {
 		t.Error("the skipped mod should still be recorded in the log")
 	}
 }
+
+// TestResolveMetadataInstallsOnlyRequiredDependencies pins which Factorio
+// dependency prefixes oblige an install. "+" (recommended) was previously
+// skipped only because it failed to match the dependency regex, with nothing
+// recording that as the intent.
+func TestResolveMetadataInstallsOnlyRequiredDependencies(t *testing.T) {
+	release := func(deps string) string {
+		return fmt.Sprintf(`{"title":"T","deprecated":false,"releases":[
+			{"version":"1.0.0","file_name":"m_1.0.0.zip","sha1":"a",
+			 "info_json":{"factorio_version":"2.0","dependencies":[%s]}}]}`, deps)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/root-mod/") {
+			_, _ = w.Write([]byte(release(`"required-dep", "~ load-order-dep", "+ recommended-dep", "? optional-dep", "! incompatible-dep", "(?) hidden-dep", "base >= 2.0"`)))
+			return
+		}
+		_, _ = w.Write([]byte(release("")))
+	}))
+	defer srv.Close()
+
+	u := &Updater{
+		modServerURL: srv.URL,
+		factVersion:  "2.0",
+		mods:         map[string]*ModData{"root-mod": {Name: "root-mod"}},
+		httpClient:   srv.Client(),
+	}
+
+	if err := u.ResolveMetadata(); err != nil {
+		t.Fatalf("ResolveMetadata() returned unexpected error: %v", err)
+	}
+
+	for _, want := range []string{"required-dep", "load-order-dep"} {
+		if _, ok := u.mods[want]; !ok {
+			t.Errorf("required dependency %q was not resolved", want)
+		}
+	}
+	for _, unwanted := range []string{"recommended-dep", "optional-dep", "incompatible-dep", "hidden-dep", "base"} {
+		if _, ok := u.mods[unwanted]; ok {
+			t.Errorf("dependency %q should not have been installed", unwanted)
+		}
+	}
+}
+
+// TestSaveModListSkipsUnchangedFile verifies that a run which changes nothing
+// leaves no backup behind. Backups were previously written on every single
+// invocation, so a nightly cron accumulated one file per run in the directory
+// Factorio and server panels scan.
+func TestSaveModListSkipsUnchangedFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	u := &Updater{
+		modPath: tmpDir,
+		mods:    map[string]*ModData{"helmod": {Name: "helmod", Enabled: true}},
+	}
+
+	// First save establishes the file and is expected to back up nothing,
+	// since there was no previous file.
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("first saveModList() failed: %v", err)
+	}
+	first, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading mod-list.json: %v", err)
+	}
+
+	// Second save changes nothing, so it must not rewrite or back up.
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("second saveModList() failed: %v", err)
+	}
+
+	second, err := os.ReadFile(filepath.Join(tmpDir, "mod-list.json"))
+	if err != nil {
+		t.Fatalf("reading mod-list.json: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Error("an unchanged save rewrote the file")
+	}
+
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		if modListBackupRe.MatchString(e.Name()) {
+			t.Errorf("an unchanged save created a backup: %s", e.Name())
+		}
+	}
+}
+
+// TestSaveModListPrunesOldBackups checks that backups are capped and that
+// nothing else in the mods directory is touched.
+func TestSaveModListPrunesOldBackups(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "mod-list.json"),
+		[]byte(`{"mods":[{"name":"helmod","enabled":true}]}`), 0600); err != nil {
+		t.Fatalf("seeding mod-list.json: %v", err)
+	}
+	for _, day := range []string{"01", "02", "03", "04", "05"} {
+		name := fmt.Sprintf("mod-list.2026-01-%s_1200.00.json", day)
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(`{"mods":[]}`), 0600); err != nil {
+			t.Fatalf("seeding backup: %v", err)
+		}
+	}
+	// Lookalikes that must survive: neither matches the backup pattern.
+	for _, name := range []string{"mod-list-custom.json", "mod-settings.dat"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("keep me"), 0600); err != nil {
+			t.Fatalf("seeding bystander: %v", err)
+		}
+	}
+
+	u := &Updater{
+		modPath: tmpDir,
+		mods: map[string]*ModData{
+			"helmod": {Name: "helmod", Enabled: true},
+			"flib":   {Name: "flib", Enabled: true}, // forces a real change
+		},
+	}
+	if err := u.saveModList(); err != nil {
+		t.Fatalf("saveModList() failed: %v", err)
+	}
+
+	entries, _ := os.ReadDir(tmpDir)
+	backups := 0
+	for _, e := range entries {
+		if modListBackupRe.MatchString(e.Name()) {
+			backups++
+		}
+	}
+	if backups != keepModListBackups {
+		t.Errorf("kept %d backups; want %d", backups, keepModListBackups)
+	}
+
+	for _, name := range []string{"mod-list-custom.json", "mod-settings.dat"} {
+		if _, err := os.Stat(filepath.Join(tmpDir, name)); err != nil {
+			t.Errorf("unrelated file %q was deleted by backup pruning", name)
+		}
+	}
+}
+
+// TestSaveLogIgnoresTrailingSlash pins the log location: filepath.Dir on a
+// path with a trailing separator is a no-op, which dropped the log inside the
+// mods directory instead of beside it.
+func TestSaveLogIgnoresTrailingSlash(t *testing.T) {
+	root := t.TempDir()
+	modDir := filepath.Join(root, "mods")
+	if err := os.MkdirAll(modDir, 0750); err != nil {
+		t.Fatalf("creating mods dir: %v", err)
+	}
+
+	for _, modPath := range []string{modDir, modDir + string(filepath.Separator)} {
+		u := &Updater{modPath: modPath}
+		if err := u.SaveLog("summary"); err != nil {
+			t.Fatalf("SaveLog(%q) failed: %v", modPath, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "last-mod-update.log")); err != nil {
+			t.Errorf("modPath %q: log not written beside the mods directory: %v", modPath, err)
+		}
+		if _, err := os.Stat(filepath.Join(modDir, "last-mod-update.log")); err == nil {
+			t.Errorf("modPath %q: log was written inside the mods directory", modPath)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 package factorio
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha1" // #nosec G505 - SHA-1 is mandated by the Factorio Mod Portal API for download validation.
@@ -34,11 +35,22 @@ var (
 	factVerRe = regexp.MustCompile(`Version: (\d+)\.(\d+)\.\d+`)
 	modZipRe  = regexp.MustCompile(`^(.*)_(\d+\.\d+\.\d+)\.zip$`)
 	depRe     = regexp.MustCompile(`^(?:[~!?](?:\(\))? )?(?P<name>[\w -]+)(?: (?P<arg>(?:[<>]=?)|=) (?P<ver>\d+\.\d+\.\d+))?$`)
+
+	// modListBackupRe matches only backups this tool wrote, so nothing else
+	// in the mods directory is ever considered for deletion.
+	modListBackupRe = regexp.MustCompile(`^mod-list\.\d{4}-\d{2}-\d{2}_\d{4}\.\d{2}\.json$`)
 )
 
 // maxAPIResponseBytes caps JSON response body reads to prevent memory exhaustion
 // from malicious or malformed API responses.
 const maxAPIResponseBytes = 10 * 1024 * 1024 // 10 MB
+
+// modListBackupStamp is the timestamp layout used for mod-list.json backups.
+// It is chosen so that the resulting filenames sort chronologically as text.
+const modListBackupStamp = "2006-01-02_1504.05"
+
+// keepModListBackups caps how many timestamped mod-list.json backups are kept.
+const keepModListBackups = 3
 
 // Updater orchestrates the lifecycle of Factorio mod management, including
 // authentication, version detection, metadata resolution, and download execution.
@@ -75,7 +87,9 @@ func (u *Updater) WriteLog(format string, args ...any) {
 // SaveLog dumps the accumulated detailed activity trace buffer to last-mod-update.log
 // located in the root Factorio directory.
 func (u *Updater) SaveLog(cliSummary string) error {
-	logPath := filepath.Join(filepath.Dir(u.modPath), "last-mod-update.log")
+	// Clean first: filepath.Dir("/srv/factorio/mods/") is the mods directory
+	// itself, which would drop the log inside the directory Factorio scans.
+	logPath := filepath.Join(filepath.Dir(filepath.Clean(u.modPath)), "last-mod-update.log")
 	finalLog := fmt.Sprintf("=== Factorio Mod Updater Log (%s) ===\n%s\n\n%s",
 		time.Now().Format(time.RFC3339), cliSummary, u.logBuf.String())
 	return os.WriteFile(logPath, []byte(finalLog), 0600)
@@ -567,8 +581,16 @@ func (u *Updater) ResolveMetadata() error {
 
 			for _, depStr := range data.Latest.InfoJSON.Dependencies {
 				depStr = strings.TrimSpace(depStr)
-				// Skip optional (?) and incompatible (!) dependencies
-				if strings.HasPrefix(depStr, "!") || strings.HasPrefix(depStr, "?") || strings.HasPrefix(depStr, "(?)") {
+				// Factorio dependency prefixes are "!" incompatible, "?"
+				// optional, "(?)" hidden optional, "+" recommended, "~"
+				// required but not affecting load order, and no prefix for a
+				// plain requirement. Only the last two oblige us to install
+				// anything; "+" in particular is a suggestion, and installing
+				// suggestions would add mods the operator never asked for.
+				if strings.HasPrefix(depStr, "!") ||
+					strings.HasPrefix(depStr, "?") ||
+					strings.HasPrefix(depStr, "(?)") ||
+					strings.HasPrefix(depStr, "+") {
 					continue
 				}
 
@@ -676,8 +698,11 @@ func (u *Updater) saveModList() error {
 	var entries []json.RawMessage
 	existing := make(map[string]bool)
 
+	var originalRaw []byte
+
 	switch data, err := os.ReadFile(modListPath); {
 	case err == nil:
+		originalRaw = data
 		if err := json.Unmarshal(data, &root); err != nil {
 			return fmt.Errorf("parsing existing mod-list.json: %w", err)
 		}
@@ -730,18 +755,25 @@ func (u *Updater) saveModList() error {
 	}
 	root["mods"] = rawMods
 
-	bytes, err := json.MarshalIndent(root, "", "  ")
+	encoded, err := json.MarshalIndent(root, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshalling mod-list: %w", err)
 	}
 
-	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format("2006-01-02_1504.05")))
+	// Most runs change nothing. Rewriting an identical file would churn the
+	// mods directory with a backup per run, in the same directory Factorio and
+	// server panels scan.
+	if sameJSON(originalRaw, encoded) {
+		return nil
+	}
+
+	backupPath := filepath.Join(u.modPath, fmt.Sprintf("mod-list.%s.json", time.Now().Format(modListBackupStamp)))
 	if err := os.Rename(modListPath, backupPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		pterm.Warning.Printf("Failed to backup mod-list.json: %v\n", err)
 	}
 
 	tmpPath := modListPath + ".tmp"
-	if err := os.WriteFile(tmpPath, bytes, 0600); err != nil {
+	if err := os.WriteFile(tmpPath, encoded, 0600); err != nil {
 		return fmt.Errorf("writing mod-list to temporary file: %w", err)
 	}
 
@@ -749,7 +781,49 @@ func (u *Updater) saveModList() error {
 		return fmt.Errorf("atomically renaming mod-list: %w", err)
 	}
 
+	u.pruneModListBackups()
+
 	return nil
+}
+
+// sameJSON reports whether two JSON documents are identical once insignificant
+// whitespace is removed.
+func sameJSON(a, b []byte) bool {
+	if len(a) == 0 {
+		return false
+	}
+	var ac, bc bytes.Buffer
+	if json.Compact(&ac, a) != nil || json.Compact(&bc, b) != nil {
+		return false
+	}
+	return ac.String() == bc.String()
+}
+
+// pruneModListBackups keeps only the most recent keepModListBackups timestamped
+// backups, so a scheduled run does not accumulate one file per invocation.
+func (u *Updater) pruneModListBackups() {
+	entries, err := os.ReadDir(u.modPath)
+	if err != nil {
+		return
+	}
+
+	var backups []string
+	for _, e := range entries {
+		if !e.IsDir() && modListBackupRe.MatchString(e.Name()) {
+			backups = append(backups, e.Name())
+		}
+	}
+	if len(backups) <= keepModListBackups {
+		return
+	}
+
+	// The timestamp layout sorts chronologically as text.
+	slices.Sort(backups)
+	for _, name := range backups[:len(backups)-keepModListBackups] {
+		if err := os.Remove(filepath.Join(u.modPath, name)); err != nil {
+			pterm.Warning.Printf("Failed to remove old mod-list backup %s: %v\n", name, err)
+		}
+	}
 }
 
 // UpdateMods iterates over all tracked mods, pruning outdated releases and
